@@ -6,7 +6,7 @@
 
 import subprocess
 import sys
-import pkg_resources
+import importlib.metadata
 from packaging import version
 import importlib.util
 
@@ -45,14 +45,14 @@ class ModuleInstaller:
     def check_package(self, package_name, min_version):
         """패키지 설치 여부 및 버전 확인"""
         try:
-            installed_version = pkg_resources.get_distribution(package_name).version
+            installed_version = importlib.metadata.version(package_name)
             if version.parse(installed_version) >= version.parse(min_version):
                 print(f"✅ {package_name} {installed_version} (요구사항: >={min_version})")
                 return True
             else:
                 print(f"⚠️  {package_name} {installed_version} < {min_version} (업그레이드 필요)")
                 return False
-        except pkg_resources.DistributionNotFound:
+        except importlib.metadata.PackageNotFoundError:
             print(f"❌ {package_name} 미설치")
             return False
     
