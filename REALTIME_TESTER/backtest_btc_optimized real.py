@@ -214,17 +214,10 @@ class BTCBacktesterOptimized:
         """과거 데이터 로드"""
         logger.info("Loading historical BTC data...")
         
-        # 환경 변수에서 결과 폴더 확인
-        result_folder = os.environ.get('RESULT_FOLDER_PATH')
-        if result_folder and os.path.exists(result_folder):
-            # 결과 폴더가 지정된 경우 해당 폴더의 DATA 사용
-            data_dir = os.path.join(result_folder, 'DATA', 'raw')
-            logger.info(f"배치 폴더에서 데이터 로드: {data_dir}")
-        else:
-            # 기본 경로 사용
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            data_dir = os.path.join(os.path.dirname(current_dir), 'Data_maker', 'DATA', 'raw')
-            logger.info(f"기본 경로에서 데이터 로드: {data_dir}")
+        # REALTIME_DATA 폴더 경로 설정
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.join(current_dir, 'REALTIME_DATA')
+        logger.info(f"REALTIME_DATA 폴더에서 데이터 로드: {data_dir}")
         
         # 데이터 디렉토리 존재 확인
         if not os.path.exists(data_dir):
@@ -232,7 +225,7 @@ class BTCBacktesterOptimized:
             raise FileNotFoundError(f"데이터 디렉토리를 찾을 수 없습니다: {data_dir}")
         
         # 1분봉 데이터
-        btc_1m_path = os.path.join(data_dir, 'BTC_1m.csv')
+        btc_1m_path = os.path.join(data_dir, 'BTC_1m_realtime.csv')
         if not os.path.exists(btc_1m_path):
             logger.error(f"1분봉 데이터 파일이 존재하지 않습니다: {btc_1m_path}")
             raise FileNotFoundError(f"1분봉 데이터 파일을 찾을 수 없습니다: {btc_1m_path}")
@@ -243,7 +236,7 @@ class BTCBacktesterOptimized:
         self.df_1m.set_index('timestamp', inplace=True)
         
         # 5분봉 데이터
-        btc_5m_path = os.path.join(data_dir, 'BTC_5m.csv')
+        btc_5m_path = os.path.join(data_dir, 'BTC_5m_realtime.csv')
         if not os.path.exists(btc_5m_path):
             logger.error(f"5분봉 데이터 파일이 존재하지 않습니다: {btc_5m_path}")
             raise FileNotFoundError(f"5분봉 데이터 파일을 찾을 수 없습니다: {btc_5m_path}")
