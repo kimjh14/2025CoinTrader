@@ -67,6 +67,10 @@ class RealtimeDataCollector:
         self.is_collecting = False
         self.collection_thread = None
         
+        # 데이터 크기 제한 (initialize_historical_data에서 설정됨)
+        self.total_1m_candles = 0
+        self.total_5m_candles = 0
+        
     def create_directories(self):
         """필요한 디렉토리 생성"""
         if not os.path.exists(self.data_dir):
@@ -85,7 +89,10 @@ class RealtimeDataCollector:
             
             params = {"market": market, "count": count}
             if to_date:
-                params["to"] = to_date
+                kst_datetime = datetime.strptime(to_date, '%Y-%m-%dT%H:%M:%S')
+                utc_datetime = kst_datetime - timedelta(hours=9)
+                params["to"] = utc_datetime.strftime('%Y-%m-%dT%H:%M:%S')
+                # 함수에 to_date를 받을땐 한국시간으로 받고, upbit api는 미국시간으로 받기 때문에 내부에서 9시간 빼줌
             
             # API 호출 (429 에러 대응을 위한 재시도 로직 포함)
             max_retries = 3
@@ -101,7 +108,6 @@ class RealtimeDataCollector:
                     if e.response.status_code == 429:  # Too Many Requests
                         if attempt < max_retries - 1:  # 마지막 시도가 아니면 재시도
                             wait_time = retry_delay * (2 ** attempt)  # 지수적 백오프
-                            print(f"⏳ API 제한 감지 (429). {wait_time}초 대기 후 재시도... (시도 {attempt + 1}/{max_retries})")
                             time.sleep(wait_time)
                             continue
                         else:
@@ -282,53 +288,74 @@ class RealtimeDataCollector:
             return pd.DataFrame()
     
     def initialize_historical_data(self, market: str) -> bool:
-        """초기 과거 2일 데이터 수집"""
+        """초기 과거 데이터 수집"""
+        # ========== 수집 기간 설정 ==========
+        DAYS = 5  # 수집할 일수 (이 값만 변경하면 모든 계산이 자동 조정됨)
+        # ===================================
+        
         start_time = datetime.now()
-        print(f"\n🚀 {market} 초기 과거 2일 데이터 수집 시작... [{start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}]")
+        print(f"\n🚀 {market} 초기 과거 {DAYS}일 데이터 수집 시작... [{start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}]")
         
         try:
-            # 현재 시각 기준 과거 2일 데이터 수집
+            # 현재 시각 기준 과거 데이터 수집
             current_time = start_time
             
-            # 1분봉: 완성된 마지막 분까지 수집 - 2일 = 2880개 (1일 = 1440분)
-            last_completed_minute = current_time.replace(second=0, microsecond=0) - timedelta(minutes=1)
-            start_minute_1m = last_completed_minute - timedelta(minutes=2879)  # 2879개 + 마지막 1개 = 2880개
+            # 데이터 수집량 계산
+            minutes_per_day = 1440  # 1일 = 1440분
+            candles_1m_per_day = minutes_per_day  # 1분봉: 1일 = 1440개
+            candles_5m_per_day = minutes_per_day // 5  # 5분봉: 1일 = 288개
+            
+            total_1m_candles = DAYS * candles_1m_per_day  # 총 1분봉 개수
+            total_5m_candles = DAYS * candles_5m_per_day  # 총 5분봉 개수
+            
+            # 클래스 멤버에 저장 (실시간 수집에서 사용)
+            self.total_1m_candles = total_1m_candles
+            self.total_5m_candles = total_5m_candles
+            
+            # 1분봉: 완성된 마지막 분까지 수집
+            last_completed_1m_time = current_time.replace(second=59) - timedelta(minutes=1)
             
             # 5분봉: 완성된 마지막 5분봉까지 수집
             current_minute = current_time.minute
-            # 현재 진행 중인 5분봉의 시작 시간을 구하고, 그 이전 5분봉이 마지막 완성봉
             current_5m_start = current_minute - (current_minute % 5)
             last_completed_5m = current_5m_start - 5
             if last_completed_5m < 0:
-                # 시간이 넘어가는 경우 (예: 02분 실행 시 전 시간 55분봉)
-                last_completed_5m_time = (current_time - timedelta(hours=1)).replace(minute=55, second=0, microsecond=0)
+                last_completed_5m_time = (current_time - timedelta(hours=1)).replace(minute=55, second=59)
             else:
-                last_completed_5m_time = current_time.replace(minute=last_completed_5m, second=0, microsecond=0)
+                last_completed_5m_time = current_time.replace(minute=last_completed_5m, second=59)
             
-            # 5분봉 수집 범위 계산 - 2일 = 576개 (1일 = 288개)
-            start_5m_time = last_completed_5m_time - timedelta(minutes=2875)  # 575개 * 5분 = 2875분
+            # 수집 범위 계산
+            start_1m_time = (last_completed_1m_time - timedelta(minutes=total_1m_candles-1)).replace(second=0)
+            start_5m_time = (last_completed_5m_time - timedelta(minutes=total_5m_candles*5-5)).replace(second=0)
             
-            print(f"📅 1분봉 수집 범위: {start_minute_1m.strftime('%Y-%m-%d %H:%M')} ~ {last_completed_minute.strftime('%Y-%m-%d %H:%M')}")
-            print(f"📅 5분봉 수집 범위: {start_5m_time.strftime('%Y-%m-%d %H:%M')} ~ {last_completed_5m_time.strftime('%Y-%m-%d %H:%M')}")
+            # 실제 시간 범위로 계산되는 개수
+            actual_1m_count = int((last_completed_1m_time - start_1m_time).total_seconds() / 60) + 1
+            actual_5m_count = int((last_completed_5m_time - start_5m_time).total_seconds() / 300) + 1
             
-            # 1분봉 데이터 수집 - 2880개 (2일치)
-            print(f"🔄 1분봉 데이터 수집 시작... (목표: 2880개)")
+            print(f"📅 1분봉 수집 범위: {start_1m_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_completed_1m_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📅 5분봉 수집 범위: {start_5m_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_completed_5m_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
+            # 1분봉 데이터 수집
             df_1m_list = []
             total_1m_collected = 0
-            max_1m_batches = 15  # 최대 15번 배치 (2880개 목표)
-            current_1m_oldest_time = None
+            batch_size_1m = 200  # 1분봉 배치 크기 (200분 = 3.33시간)
+            max_1m_batches = (total_1m_candles + batch_size_1m - 1) // batch_size_1m + 10 # 필요한 배치 수 계산
+            
+            # 수정된 배치별 시간 계산 로직
+            current_batch_end_time = last_completed_1m_time
             
             for batch in range(max_1m_batches):
-                if batch == 0:
-                    # 첫 번째 배치: 최신 200개
-                    print(f"📥 1분봉 배치 {batch + 1}: 최신 200개 수집")
-                    batch_1m_df = self.collect_candle_data(market, "1", 200)
-                else:
-                    # 두 번째 배치부터: 이전 배치의 가장 오래된 시간 기준
-                    to_time_str = current_1m_oldest_time.strftime('%Y-%m-%dT%H:%M:%S')
-                    print(f"📥 1분봉 배치 {batch + 1}: {to_time_str} 기준으로 200개 수집")
-                    batch_1m_df = self.collect_candle_data(market, "1", 200, to_time_str)
+                # 배치별 끝 시간 계산 (이전 배치의 시작 시간이 현재 배치의 끝 시간)
+                batch_end_time = current_batch_end_time
+                batch_start_time = (batch_end_time - timedelta(minutes=batch_size_1m) + timedelta(minutes=1)).replace(second=0) 
+
+                if batch_start_time < start_1m_time:
+                    batch_start_time = start_1m_time
+                    
+                end_str = batch_end_time.strftime('%Y-%m-%dT%H:%M:%S')
+
+                
+                batch_1m_df = self.collect_candle_data(market, "1", batch_size_1m, end_str)
                 
                 if batch_1m_df.empty:
                     print(f"⚠️ 1분봉 배치 {batch + 1}: 데이터 없음, 수집 종료")
@@ -338,29 +365,32 @@ class RealtimeDataCollector:
                 batch_1m_df['timestamp'] = pd.to_datetime(batch_1m_df['timestamp'])
                 batch_1m_df = batch_1m_df.sort_values('timestamp').reset_index(drop=True)
                 
+                # 배치 시작 시간보다 이전 데이터는 제거
+                batch_1m_df = batch_1m_df[batch_1m_df['timestamp'] >= batch_start_time-timedelta(minutes=1)]
+   
+                
+                if batch_1m_df.empty:
+                    print(f"⚠️ 1분봉 배치 {batch + 1}: 필터링 후 데이터 없음")
+                    break
+                
                 df_1m_list.append(batch_1m_df)
                 total_1m_collected += len(batch_1m_df)
                 
-                # 가장 오래된 시간 업데이트
-                current_1m_oldest_time = batch_1m_df['timestamp'].min()
-                
-                print(f"✅ 1분봉 배치 {batch + 1}: {len(batch_1m_df)}개 수집 (누적: {total_1m_collected}개)")
-                print(f"   시간 범위: {batch_1m_df['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {batch_1m_df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
-                print(f"   다음 기준 시간: {current_1m_oldest_time.strftime('%Y-%m-%d %H:%M')}")
                 
                 # 목표치 도달 확인
-                if total_1m_collected >= 2880:
-                    print(f"🎯 1분봉 목표치 도달: {total_1m_collected}개 수집 완료")
+                if total_1m_collected >= total_1m_candles:
                     break
                 
-                # 2일치 시간 범위 도달 확인
-                if current_1m_oldest_time <= start_minute_1m:
-                    print(f"🎯 1분봉 2일 범위 도달: {current_1m_oldest_time.strftime('%Y-%m-%d %H:%M')} <= {start_minute_1m.strftime('%Y-%m-%d %H:%M')}")
+                # 시간 범위 도달 확인
+                if batch_start_time <= start_1m_time:
                     break
+                
+                # 다음 배치의 끝 시간을 현재 배치의 시작 시간으로 설정
+                current_batch_end_time = batch_start_time
                 
                 # API 호출 간 대기
-                time.sleep(0.5)
-            
+                time.sleep(0.1)
+
             # 1분봉 데이터 합치기
             if df_1m_list:
                 df_1m = pd.concat(df_1m_list, ignore_index=True)
@@ -368,39 +398,40 @@ class RealtimeDataCollector:
                 df_1m = df_1m.sort_values('timestamp').reset_index(drop=True)
                 
                 # 완성된 분봉만 필터링
-                df_1m = df_1m[df_1m['timestamp'] <= last_completed_minute]
+                df_1m = df_1m[df_1m['timestamp'] <= last_completed_1m_time]
                 
-                print(f"📋 최종 1분봉 데이터: {len(df_1m)}개")
-                print(f"📅 1분봉 실제 수집 범위: {df_1m['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {df_1m['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
+                print()
+                print(f"📅 1분봉 실제 수집 결과 : {df_1m['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {df_1m['timestamp'].max().strftime('%Y-%m-%d %H:%M')}  {len(df_1m)}개")
                 
                 if not df_1m.empty:
                     df_1m = self.calculate_technical_indicators(df_1m)
                     df_1m = self.create_labels(df_1m)
                 else:
-                    print(f"❌ {market} 필터링 후 1분봉 데이터 없음")
-                    return False
+                    df_1m = pd.DataFrame()
             else:
-                print(f"❌ {market} 1분봉 데이터 수집 실패")
-                return False
+                df_1m = pd.DataFrame()
             
-            # 5분봉 데이터 수집 - 576개 (2일치)
-            print(f"🔄 5분봉 데이터 수집 시작... (목표: 576개)")
-            
+            # 5분봉 데이터 수집
             df_5m_list = []
             total_5m_collected = 0
-            max_5m_batches = 4  # 최대 4번 배치 (576개 목표)
-            current_5m_oldest_time = None
+            batch_size_5m = 200  # 5분봉 배치 크기 (200개 = 1000분 = 16.67시간)
+            max_5m_batches = (total_5m_candles + batch_size_5m - 1) // batch_size_5m + 10 # 필요한 배치 수 계산
+            
+            # 수정된 배치별 시간 계산 로직 (1분봉과 동일한 방식)
+            current_5m_batch_end_time = last_completed_5m_time
             
             for batch in range(max_5m_batches):
-                if batch == 0:
-                    # 첫 번째 배치: 최신 200개
-                    print(f"📥 5분봉 배치 {batch + 1}: 최신 200개 수집")
-                    batch_5m_df = self.collect_candle_data(market, "5", 200)
-                else:
-                    # 두 번째 배치부터: 이전 배치의 가장 오래된 시간 기준
-                    to_time_str = current_5m_oldest_time.strftime('%Y-%m-%dT%H:%M:%S')
-                    print(f"📥 5분봉 배치 {batch + 1}: {to_time_str} 기준으로 200개 수집")
-                    batch_5m_df = self.collect_candle_data(market, "5", 200, to_time_str)
+                # 배치별 끝 시간 계산 (이전 배치의 시작 시간이 현재 배치의 끝 시간)
+                batch_end_time = current_5m_batch_end_time
+                batch_start_time = (batch_end_time - timedelta(minutes=batch_size_5m * 5) + timedelta(minutes=5)).replace(second=0)
+                
+                if batch_start_time < start_5m_time:
+                    batch_start_time = start_5m_time
+                    
+                end_str = batch_end_time.strftime('%Y-%m-%dT%H:%M:%S')
+                
+                
+                batch_5m_df = self.collect_candle_data(market, "5", batch_size_5m, end_str)
                 
                 if batch_5m_df.empty:
                     print(f"⚠️ 5분봉 배치 {batch + 1}: 데이터 없음, 수집 종료")
@@ -410,36 +441,30 @@ class RealtimeDataCollector:
                 batch_5m_df['timestamp'] = pd.to_datetime(batch_5m_df['timestamp'])
                 batch_5m_df = batch_5m_df.sort_values('timestamp').reset_index(drop=True)
                 
-                # 중복 방지
-                if current_5m_oldest_time is not None:
-                    batch_5m_df = batch_5m_df[batch_5m_df['timestamp'] < current_5m_oldest_time]
+                # 배치 시간 범위에 맞게 필터링 (1분봉과 동일한 로직)
+                batch_5m_df = batch_5m_df[batch_5m_df['timestamp'] >= batch_start_time - timedelta(minutes=5)]
                 
                 if batch_5m_df.empty:
-                    print(f"⚠️ 5분봉 배치 {batch + 1}: 중복 제거 후 데이터 없음, 수집 종료")
+                    print(f"⚠️ 5분봉 배치 {batch + 1}: 필터링 후 데이터 없음")
                     break
                 
                 df_5m_list.append(batch_5m_df)
                 total_5m_collected += len(batch_5m_df)
                 
-                # 가장 오래된 시간 업데이트
-                current_5m_oldest_time = batch_5m_df['timestamp'].min()
-                
-                print(f"✅ 5분봉 배치 {batch + 1}: {len(batch_5m_df)}개 수집 (누적: {total_5m_collected}개)")
-                print(f"   시간 범위: {batch_5m_df['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {batch_5m_df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
-                print(f"   다음 기준 시간: {current_5m_oldest_time.strftime('%Y-%m-%d %H:%M')}")
                 
                 # 목표치 도달 확인
-                if total_5m_collected >= 576:
-                    print(f"🎯 5분봉 목표치 도달: {total_5m_collected}개 수집 완료")
+                if total_5m_collected >= total_5m_candles:
                     break
                 
-                # 2일치 시간 범위 도달 확인
-                if current_5m_oldest_time <= start_5m_time:
-                    print(f"🎯 5분봉 2일 범위 도달: {current_5m_oldest_time.strftime('%Y-%m-%d %H:%M')} <= {start_5m_time.strftime('%Y-%m-%d %H:%M')}")
+                # 시간 범위 도달 확인
+                if batch_start_time <= start_5m_time:
                     break
                 
-                # API 호출 간 대기
-                time.sleep(0.5)
+                # 다음 배치의 끝 시간을 현재 배치의 시작 시간으로 설정
+                current_5m_batch_end_time = batch_start_time
+
+                
+                
             
             # 5분봉 데이터 합치기
             if df_5m_list:
@@ -450,8 +475,8 @@ class RealtimeDataCollector:
                 # 완성된 5분봉만 필터링
                 df_5m = df_5m[df_5m['timestamp'] <= last_completed_5m_time]
                 
-                print(f"📋 최종 5분봉 데이터: {len(df_5m)}개")
-                print(f"📅 5분봉 실제 수집 범위: {df_5m['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {df_5m['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
+                print(f"📅 5분봉 실제 수집 결과: {df_5m['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {df_5m['timestamp'].max().strftime('%Y-%m-%d %H:%M')}  {len(df_5m)}개")
+                print()
                 
                 if not df_5m.empty:
                     df_5m = self.calculate_technical_indicators(df_5m)
@@ -501,8 +526,8 @@ class RealtimeDataCollector:
         try:
             current_time = datetime.now()
             # 완성된 마지막 분봉 시간 (현재 시간의 이전 분)
-            last_completed_minute = current_time.replace(second=0, microsecond=0) - timedelta(minutes=1)
-            to_date = last_completed_minute.strftime('%Y-%m-%dT%H:%M:%S')
+            last_completed_1m_time = current_time.replace(second=0, microsecond=0) - timedelta(minutes=1)
+            to_date = last_completed_1m_time.strftime('%Y-%m-%dT%H:%M:%S')
             
             # 최신 1분봉 데이터 2개 수집 후 필터링 (여유있게)
             df_new = self.collect_candle_data(market, "1", 2)
@@ -510,7 +535,7 @@ class RealtimeDataCollector:
             if not df_new.empty:
                 # 완성된 분봉만 필터링
                 df_new['timestamp'] = pd.to_datetime(df_new['timestamp'])
-                df_new = df_new[df_new['timestamp'] <= last_completed_minute].tail(1).reset_index(drop=True)
+                df_new = df_new[df_new['timestamp'] <= last_completed_1m_time].tail(1).reset_index(drop=True)
             
             if df_new.empty:
                 return False
@@ -530,9 +555,9 @@ class RealtimeDataCollector:
                 # 새 데이터 추가하고 가장 과거 데이터 제거 (2880개 유지)
                 updated_df = pd.concat([existing_df, df_new], ignore_index=True)
                 
-                # 정확히 2880개만 유지 (새로 추가되면 가장 과거 1개 제거)
-                if len(updated_df) > 2880:
-                    updated_df = updated_df.tail(2880).reset_index(drop=True)
+                # 정확히 total_1m_candles개만 유지 (새로 추가되면 가장 과거 1개 제거)
+                if len(updated_df) > self.total_1m_candles:
+                    updated_df = updated_df.tail(self.total_1m_candles).reset_index(drop=True)
                 
                 # 기술적 지표 재계산 및 레이블 생성
                 updated_df = self.calculate_technical_indicators(updated_df)
@@ -587,9 +612,9 @@ class RealtimeDataCollector:
                     if existing_5m.empty or existing_5m[existing_5m['timestamp'] == new_timestamp].empty:
                         updated_5m = pd.concat([existing_5m, df_5m_new], ignore_index=True)
                         
-                        # 정확히 576개만 유지 (새로 추가되면 가장 과거 1개 제거)
-                        if len(updated_5m) > 576:  # 2일분 = 576개
-                            updated_5m = updated_5m.tail(576).reset_index(drop=True)
+                        # 정확히 total_5m_candles개만 유지 (새로 추가되면 가장 과거 1개 제거)
+                        if len(updated_5m) > self.total_5m_candles:
+                            updated_5m = updated_5m.tail(self.total_5m_candles).reset_index(drop=True)
                         
                         updated_5m = self.calculate_technical_indicators(updated_5m)
                         updated_5m = self.create_labels(updated_5m)

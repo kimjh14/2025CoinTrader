@@ -61,16 +61,16 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
-# 로깅 설정 (환경 변수 확인)
-result_folder = os.environ.get('RESULT_FOLDER_PATH')
-result_timestamp = os.environ.get('RESULT_TIMESTAMP', datetime.now().strftime("%Y%m%d_%H%M%S"))
+# 로깅 설정 (REALTIME_DATA 폴더에 저장)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+log_dir = os.path.join(current_dir, 'REALTIME_DATA')
 
-if result_folder and os.path.exists(result_folder):
-    # 결과 폴더가 지정된 경우 해당 폴더에 로그 생성
-    log_file_path = os.path.join(result_folder, f'backtest_btc_optimized_{result_timestamp}.log')
-else:
-    # 기본 경로에 로그 생성
-    log_file_path = f'backtest_btc_optimized_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+# 디렉토리가 없으면 생성
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+result_timestamp = os.environ.get('RESULT_TIMESTAMP', datetime.now().strftime("%Y%m%d_%H%M%S"))
+log_file_path = os.path.join(log_dir, f'backtest_btc_optimized_{result_timestamp}.log')
 
 logging.basicConfig(
     level=logging.INFO,
@@ -852,18 +852,19 @@ class BTCBacktesterOptimized:
                     profit_factor = np.mean(winning_profits) / abs(np.mean(losing_profits))
                     print(f"- Profit Factor: {profit_factor:.2f}")
             
-            # 거래 내역 저장 (환경 변수 확인)
+            # 거래 내역 저장 (REALTIME_DATA 폴더에 저장)
             df_trades = pd.DataFrame(self.trades)
             
-            result_folder = os.environ.get('RESULT_FOLDER_PATH')
-            result_timestamp = os.environ.get('RESULT_TIMESTAMP', datetime.now().strftime("%Y%m%d_%H%M%S"))
+            # 로그와 동일한 폴더 사용
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            result_dir = os.path.join(current_dir, 'REALTIME_DATA')
             
-            if result_folder and os.path.exists(result_folder):
-                # 결과 폴더가 지정된 경우 해당 폴더에 저장
-                filename = os.path.join(result_folder, f'backtest_btc_optimized_results_{result_timestamp}.csv')
-            else:
-                # 기본 경로에 저장
-                filename = f'backtest_btc_optimized_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            # 디렉토리가 없으면 생성
+            if not os.path.exists(result_dir):
+                os.makedirs(result_dir)
+            
+            result_timestamp = os.environ.get('RESULT_TIMESTAMP', datetime.now().strftime("%Y%m%d_%H%M%S"))
+            filename = os.path.join(result_dir, f'backtest_btc_optimized_results_{result_timestamp}.csv')
             
             df_trades.to_csv(filename, index=False, encoding='utf-8-sig')
             print(f"\nBTC Trade history saved to: {filename}")

@@ -137,7 +137,11 @@ class CryptoDataCollector:
             # 쿼리 파라미터 설정
             params = {"market": market, "count": count}
             if to_date:
-                params["to"] = to_date
+                # 한국시간을 UTC로 변환 (업비트 API는 UTC 기준)
+                kst_datetime = datetime.strptime(to_date, '%Y-%m-%dT%H:%M:%S')
+                utc_datetime = kst_datetime - timedelta(hours=9)
+                params["to"] = utc_datetime.strftime('%Y-%m-%dT%H:%M:%S')
+                # 함수에 to_date를 받을땐 한국시간으로 받고, upbit api는 UTC시간으로 받기 때문에 내부에서 9시간 빼줌
             
             # API 호출
             response = requests.get(target_url, params=params)
@@ -415,7 +419,7 @@ class CryptoDataCollector:
                                 last_progress_pct = progress_pct
                             
                             # API 호출 제한을 위한 대기
-                            time.sleep(0.5)
+                            time.sleep(0.1)
                         else:
                             self.logger.warning(f"{coin} {timeframe_name} {to_date} 데이터가 없습니다.")
                             # 다음 날짜로 이동
