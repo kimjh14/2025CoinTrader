@@ -113,6 +113,10 @@ class RealtimeTradingSystem:
             self.is_running = True
             coin_name = market.replace('KRW-', '')
             
+            # 초기 데이터로 첫 번째 예측 수행
+            # print("\n🔮 초기 데이터로 다음 분봉 예측 수행...")
+            self.on_new_minute_data(coin_name)
+            
             # 실시간 수집 스레드 시작
             self.data_collector.is_collecting = True
             self.collection_thread = threading.Thread(

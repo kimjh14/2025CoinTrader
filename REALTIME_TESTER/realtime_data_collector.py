@@ -143,7 +143,7 @@ class RealtimeDataCollector:
             })
             
             df = df.sort_values('timestamp').reset_index(drop=True)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%dT%H:%M:%S')
             
             # 데이터 검증
             if df.empty:
@@ -259,7 +259,7 @@ class RealtimeDataCollector:
             
         try:
             df = df_1m.copy()
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%dT%H:%M:%S')
             df = df.set_index('timestamp')
             
             # 리샘플링 규칙
@@ -294,7 +294,7 @@ class RealtimeDataCollector:
         # ===================================
         
         start_time = datetime.now()
-        print(f"\n🚀 {market} 초기 과거 {DAYS}일 데이터 수집 시작... [{start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}]")
+        print(f"\n[{start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}] {market} 초기 과거 {DAYS}일 데이터 수집 시작... ")
         
         try:
             # 현재 시각 기준 과거 데이터 수집
@@ -332,8 +332,8 @@ class RealtimeDataCollector:
             actual_1m_count = int((last_completed_1m_time - start_1m_time).total_seconds() / 60) + 1
             actual_5m_count = int((last_completed_5m_time - start_5m_time).total_seconds() / 300) + 1
             
-            print(f"📅 1분봉 수집 범위: {start_1m_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_completed_1m_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"📅 5분봉 수집 범위: {start_5m_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_completed_5m_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📅 1분봉 수집 범위 : {start_1m_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_completed_1m_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📅 5분봉 수집 범위 : {start_5m_time.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_completed_5m_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
             # 1분봉 데이터 수집
             df_1m_list = []
@@ -475,7 +475,7 @@ class RealtimeDataCollector:
                 # 완성된 5분봉만 필터링
                 df_5m = df_5m[df_5m['timestamp'] <= last_completed_5m_time]
                 
-                print(f"📅 5분봉 실제 수집 결과: {df_5m['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {df_5m['timestamp'].max().strftime('%Y-%m-%d %H:%M')}  {len(df_5m)}개")
+                print(f"📅 5분봉 실제 수집 결과 : {df_5m['timestamp'].min().strftime('%Y-%m-%d %H:%M')} ~ {df_5m['timestamp'].max().strftime('%Y-%m-%d %H:%M')}  {len(df_5m)}개")
                 print()
                 
                 if not df_5m.empty:
@@ -496,20 +496,51 @@ class RealtimeDataCollector:
             # 완료 시간 및 소요 시간 계산
             end_time = datetime.now()
             elapsed_time = (end_time - start_time).total_seconds()
-            print(f"✅ {market} 초기 데이터 수집 완료: [{end_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}] (소요시간: {elapsed_time:.3f}초)")
+            print(f"✅ {market} 초기 데이터 수집 완료 : [{end_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}] (소요시간: {elapsed_time:.3f}초)")
+            print(f"   () 안의 %는 전봉 종가대비 퍼센트 변동")
             print()
             
             # 초기 데이터 출력 (마지막 값만)
             if not df_1m.empty:
                 last_1m = df_1m.iloc[-1]
                 timestamp = last_1m['timestamp'].strftime('%Y-%m-%d %H:%M')
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📊 1분봉 [{timestamp}] 시가: {last_1m['open']:,.0f} | 고가: {last_1m['high']:,.0f} | 저가: {last_1m['low']:,.0f} | 종가: {last_1m['close']:,.0f}")
+                
+                # 직전 1분봉 가격 대비 변화율 계산
+                if len(df_1m) >= 2:
+                    prev_1m = df_1m.iloc[-2]
+                    open_change = ((last_1m['open'] - prev_1m['close']) / prev_1m['close'] * 100)
+                    high_change = ((last_1m['high'] - prev_1m['close']) / prev_1m['close'] * 100)
+                    low_change = ((last_1m['low'] - prev_1m['close']) / prev_1m['close'] * 100)
+                    close_change = ((last_1m['close'] - prev_1m['close']) / prev_1m['close'] * 100)
+                    open_info = f" ({open_change:+.3f}%)"
+                    high_info = f" ({high_change:+.3f}%)"
+                    low_info = f" ({low_change:+.3f}%)"
+                    close_info = f" ({close_change:+.3f}%)"
+                else:
+                    open_info = high_info = low_info = close_info = ""
+                
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📊 1분봉 [{timestamp}] 시가: {last_1m['open']:,.0f}{open_info} | 고가: {last_1m['high']:,.0f}{high_info} | 저가: {last_1m['low']:,.0f}{low_info} | 종가: {last_1m['close']:,.0f}{close_info}")
                 print()
             
             if not df_5m.empty:
                 last_5m = df_5m.iloc[-1]
                 timestamp = last_5m['timestamp'].strftime('%Y-%m-%d %H:%M')
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🔥 5분봉 [{timestamp}] 시가: {last_5m['open']:,.0f} | 고가: {last_5m['high']:,.0f} | 저가: {last_5m['low']:,.0f} | 종가: {last_5m['close']:,.0f}")
+                
+                # 직전 5분봉 가격 대비 변화율 계산
+                if len(df_5m) >= 2:
+                    prev_5m = df_5m.iloc[-2]
+                    open_change = ((last_5m['open'] - prev_5m['close']) / prev_5m['close'] * 100)
+                    high_change = ((last_5m['high'] - prev_5m['close']) / prev_5m['close'] * 100)
+                    low_change = ((last_5m['low'] - prev_5m['close']) / prev_5m['close'] * 100)
+                    close_change = ((last_5m['close'] - prev_5m['close']) / prev_5m['close'] * 100)
+                    open_info = f" ({open_change:+.3f}%)"
+                    high_info = f" ({high_change:+.3f}%)"
+                    low_info = f" ({low_change:+.3f}%)"
+                    close_info = f" ({close_change:+.3f}%)"
+                else:
+                    open_info = high_info = low_info = close_info = ""
+                
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🔥 5분봉 [{timestamp}] 시가: {last_5m['open']:,.0f}{open_info} | 고가: {last_5m['high']:,.0f}{high_info} | 저가: {last_5m['low']:,.0f}{low_info} | 종가: {last_5m['close']:,.0f}{close_info}")
                 print()
             
             # 파일로 저장
@@ -568,7 +599,22 @@ class RealtimeDataCollector:
                 # 신규 분봉 데이터 출력
                 new_row = df_new.iloc[-1]
                 candle_time = new_row['timestamp'].strftime('%Y-%m-%d %H:%M')
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🆕 1분봉 [{candle_time}] 시가: {new_row['open']:,.0f} | 고가: {new_row['high']:,.0f} | 저가: {new_row['low']:,.0f} | 종가: {new_row['close']:,.0f}")
+                
+                # 직전 1분봉 종가 대비 변화율 계산
+                if len(existing_df) >= 1:
+                    prev_close = existing_df.iloc[-1]['close']
+                    open_change = ((new_row['open'] - prev_close) / prev_close * 100)
+                    high_change = ((new_row['high'] - prev_close) / prev_close * 100)
+                    low_change = ((new_row['low'] - prev_close) / prev_close * 100)
+                    close_change = ((new_row['close'] - prev_close) / prev_close * 100)
+                    open_info = f" ({open_change:+.3f}%)"
+                    high_info = f" ({high_change:+.3f}%)"
+                    low_info = f" ({low_change:+.3f}%)"
+                    close_info = f" ({close_change:+.3f}%)"
+                else:
+                    open_info = high_info = low_info = close_info = ""
+                
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📊 1분봉 [{candle_time}] 시가: {new_row['open']:,.0f}{open_info} | 고가: {new_row['high']:,.0f}{high_info} | 저가: {new_row['low']:,.0f}{low_info} | 종가: {new_row['close']:,.0f}{close_info}")
                 print()
                 
             else:
@@ -623,7 +669,22 @@ class RealtimeDataCollector:
                         # 5분봉 업데이트 알림
                         new_row = df_5m_new.iloc[-1]
                         candle_time = new_row['timestamp'].strftime('%Y-%m-%d %H:%M')
-                        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🔥 5분봉 [{candle_time}] 시가: {new_row['open']:,.0f} | 고가: {new_row['high']:,.0f} | 저가: {new_row['low']:,.0f} | 종가: {new_row['close']:,.0f}")
+                        
+                        # 직전 5분봉 종가 대비 변화율 계산
+                        if len(existing_5m) >= 1:
+                            prev_close = existing_5m.iloc[-1]['close']
+                            open_change = ((new_row['open'] - prev_close) / prev_close * 100)
+                            high_change = ((new_row['high'] - prev_close) / prev_close * 100)
+                            low_change = ((new_row['low'] - prev_close) / prev_close * 100)
+                            close_change = ((new_row['close'] - prev_close) / prev_close * 100)
+                            open_info = f" ({open_change:+.3f}%)"
+                            high_info = f" ({high_change:+.3f}%)"
+                            low_info = f" ({low_change:+.3f}%)"
+                            close_info = f" ({close_change:+.3f}%)"
+                        else:
+                            open_info = high_info = low_info = close_info = ""
+                        
+                        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🔥 5분봉 [{candle_time}] 시가: {new_row['open']:,.0f}{open_info} | 고가: {new_row['high']:,.0f}{high_info} | 저가: {new_row['low']:,.0f}{low_info} | 종가: {new_row['close']:,.0f}{close_info}")
                         print()
             
             # self.logger.debug(f"{coin_name} 5분봉 업데이트 확인 완료")

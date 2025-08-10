@@ -153,7 +153,7 @@ class BTCBacktesterOptimized:
         self.time_stop_minutes = 20  # 시간 손절 완화 (15 → 20)
         
         # BTC 전용 추가 최적화 설정
-        self.min_hold_minutes = 3  # 최소 거래 간격 3분
+        self.min_hold_minutes = 1  # 최소 거래 간격 3분
         self.good_trading_hours = list(range(24))  # 24시간 거래 가능 (암호화폐 특성 반영)
         self.min_buy_prob_diff = 1.8  # 확률 차이 완화 (2.0 → 1.8)
         self.volatility_threshold = 0.5  # BTC 변동성 임계값

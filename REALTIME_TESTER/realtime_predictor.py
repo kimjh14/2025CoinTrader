@@ -306,7 +306,17 @@ class RealtimePredictor:
         probs = probabilities  # [매도, 홀드, 매수] 확률
         signal = predicted_class  # 0: 매도, 1: 홀드, 2: 매수
         current_price = df_1m['close'].iloc[-1]
-        current_time = df_1m.index[-1]
+        
+        # timestamp 컬럼에서 현재 시간 추출
+        if 'timestamp' in df_1m.columns:
+            current_time = pd.to_datetime(df_1m['timestamp'].iloc[-1])
+        else:
+            # 인덱스가 DatetimeIndex인 경우
+            if isinstance(df_1m.index, pd.DatetimeIndex):
+                current_time = df_1m.index[-1]
+            else:
+                # 기본값으로 현재 시간 사용
+                current_time = datetime.now()
         
         # 1. 시간대 필터 (24시간 거래 가능하므로 항상 True)
         good_trading_hours = list(range(24))
