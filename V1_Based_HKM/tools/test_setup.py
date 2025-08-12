@@ -106,8 +106,8 @@ def test_config_loading():
     try:
         import sys
         import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'Data_maker'))
-        from config import Config
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from config.data_config import Config
         config = Config()
         print("config.py 로딩 성공")
         print(f"대상 코인 수: {len(config.TARGET_COINS)}")

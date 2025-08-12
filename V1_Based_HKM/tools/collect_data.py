@@ -48,7 +48,10 @@ from typing import List, Dict, Tuple
 import json
 
 # config.py에서 API 키 가져오
-from config import Config
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.data_config import Config
 
 class CryptoDataCollector:
     """가상화폐 데이터 수집 및 기술적 지표 계산 클래스"""

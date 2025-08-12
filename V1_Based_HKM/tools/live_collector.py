@@ -46,7 +46,8 @@ import threading
 import json
 
 # 로컬 config 모듈 임포트
-from config import Config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.realtime_config import Config
 
 class RealtimeDataCollector:
     """실시간 가상화폐 데이터 수집 클래스"""
