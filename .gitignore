@@ -96,3 +96,6 @@ desktop.ini
 # Temporary files
 *.tmp
 temp/
+
+V2_Based_with_CHATGPT/data/seq/*.parquet
+*.parquet
