@@ -1,3 +1,32 @@
+"""
+live_paper.py - 실시간 페이퍼 트레이딩 시스템
+
+CLI 사용 예시:
+python tools/live_paper.py `
+  --market KRW-BTC `
+  --lookback 240 `
+  --model artifacts/model_mtf_h20_p03.joblib `
+  --meta artifacts/meta_mtf_h20_p03.json `
+  --scaler artifacts/scaler_mtf_h20_p03.joblib `
+  --fee 0.0005 `
+  --state artifacts/live_state.json `
+  --log_md tools/live_trades.md
+
+사용법:
+• train.py로 훈련된 모델을 사용한 실시간 페이퍼 트레이딩입니다
+• --market: 거래할 암호화폐 마켓 (KRW-BTC 등)
+• --lookback: 예측에 사용할 과거 데이터 길이 (분 단위, 240=4시간)
+• --model: 훈련된 모델 파일 (.joblib)
+• --meta: 모델 메타데이터 (.json)
+• --scaler: 스케일러 파일 (호환용)
+• --fee: 거래 수수료 (0.0005 = 0.05%)
+• --state: 거래 상태 저장 파일 (.json) - 포지션, 진입가 등
+• --log_md: 거래 로그 마크다운 파일 (.md)
+• --once: 한 번만 실행 후 종료 (테스트용)
+• 매분마다 새로운 데이터를 받아 매수/매도/홀드 결정을 내립니다
+• 실제 거래 없이 가상으로 성과를 추적합니다
+"""
+
 # tools/live_paper.py
 import os, sys, time, json
 from datetime import datetime, timedelta, timezone

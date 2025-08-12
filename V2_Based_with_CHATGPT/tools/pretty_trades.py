@@ -1,3 +1,25 @@
+"""
+pretty_trades.py - 거래 로그 Markdown 변환 도구
+
+CLI 사용 예시:
+python tools/pretty_trades.py `
+  --csv artifacts/trades_mtf_h20_p03.csv `
+  --out artifacts/trades_mtf_h20_p03.md `
+  --report artifacts/bt_mtf_h20_p03.json `
+  --meta artifacts/meta_mtf_h20_p03.json `
+  --limit 50
+
+사용법:
+• backtest.py에서 생성한 거래 로그 CSV를 보기 좋은 마크다운으로 변환합니다
+• --csv: 백테스트 거래 로그 CSV 파일 (필수)
+• --out: 저장할 마크다운 파일 경로 (필수)
+• --report: 백테스트 요약 JSON (선택) - 수익률, 거래수 등 포함
+• --meta: 모델 메타데이터 JSON (선택) - 임계값, 알고리즘 정보 등
+• --limit: 표시할 거래 수 제한 (선택) - 너무 많으면 파일이 커짐
+• 각 거래의 진입/청산 시점, 수익률, 조건 등을 상세히 표시합니다
+• backtest.py의 --auto_md 옵션을 쓰면 이 도구 없이도 자동 생성됩니다
+"""
+
 # tools/pretty_trades_md.py
 import argparse
 import os

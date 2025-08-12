@@ -1,19 +1,21 @@
 
 """
-Fast Upbit collector (UTC, exclusive `to`, deterministic time stepping).
+collect.py - 업비트 OHLCV 데이터 수집 도구
 
-Why faster?
-- Removes fixed sleeps in the loop; relies on Remaining-Req header (sec) to throttle.
-- Computes next `to` directly by subtracting 200*unit minutes (one page span),
-  so we never refetch overlapping pages.
+CLI 사용 예시:
+python tools/collect.py `
+  --market KRW-BTC `
+  --minutes 1 `
+  --days 30 `
+  --out data/raw/krw_btc_1m.parquet
 
-CLI:
-  python tools/collect.py --market KRW-BTC --minutes 1 --days 1 --out data/krw_btc_1m.parquet
-  python tools/collect.py --market KRW-BTC --minutes 1 --days 180 --out data/krw_btc_1m.parquet
-
-
-Extra:
-  --rps 9   # (optional) cap requests/sec manually if needed
+사용법:
+• 업비트에서 암호화폐 1분봉 데이터를 수집합니다
+• --market: 거래 마켓 (KRW-BTC, KRW-ETH 등)
+• --minutes: 분봉 단위 (1분봉만 지원)
+• --days: 수집할 기간 (일 단위)
+• --out: 저장할 파일 경로 (.parquet 권장)
+• 수집된 데이터는 build_dataset.py의 입력으로 사용됩니다
 """
 
 import argparse

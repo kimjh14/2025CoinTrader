@@ -1,3 +1,40 @@
+"""
+build_dataset.py - 피처 및 라벨 생성 도구
+
+CLI 사용 예시:
+
+1) Classic 방식 (멀티 타임프레임 + 기술적 지표):
+python tools/build_dataset.py `
+  --mode classic `
+  --in data/raw/krw_btc_1m.parquet `
+  --out data/classic/dataset_mtf_h20.parquet `
+  --horizon 20 `
+  --up 0.003 `
+  --dn -0.003 `
+  --tfs 3,5
+
+2) Sequence 방식 (최근 N봉 패턴):
+python tools/build_dataset.py `
+  --mode seq `
+  --in data/raw/krw_btc_1m.parquet `
+  --out data/seq/dataset_seq_n20_h20.parquet `
+  --n_steps 20 `
+  --horizon 20 `
+  --up 0.003 `
+  --dn -0.003 `
+  --ta
+
+사용법:
+• collect.py로 수집한 1분봉 데이터를 ML 훈련용 데이터셋으로 변환합니다
+• Classic: 기술적 지표 기반 예측 (현재 지표 → horizon 분 후 예측)
+• Sequence: 패턴 기반 예측 (최근 N봉 패턴 → 다음봉 예측)
+• --horizon: 예측 대상 시점 (20=20분 후, 1=1분 후)
+• --up/--dn: 라벨링 임계값 (±0.3%=큰 움직임, ±0.03%=작은 움직임)
+• --tfs: Classic 전용 멀티 타임프레임 (3,5 = 3분봉+5분봉 추가)
+• --ta: Sequence 전용 기술적 지표 포함 옵션
+• 생성된 데이터셋은 train.py의 입력으로 사용됩니다
+"""
+
 import argparse
 import os, sys
 import pandas as pd
@@ -156,6 +193,9 @@ def build_seq_flat(
     최근 n_steps개의 1분봉(OHLCV + 선택지표)을 한 행에 '펼쳐서' 담고,
     다음 horizon(기본 1) 분 뒤 방향 라벨을 붙인다.
     임계(up/dn)=0이면 단순 다음봉 상승/하락(=0 임계) 라벨.
+    
+    성능 최적화: 기술적 지표는 전체 데이터에 대해 한 번만 계산하고,
+    각 윈도우에서는 미리 계산된 지표 값들을 슬라이싱하여 사용
     """
     required = ["open","high","low","close","volume","value","timestamp"]
     for c in required:
@@ -164,11 +204,12 @@ def build_seq_flat(
 
     df = df_in.copy().sort_values("timestamp").reset_index(drop=True)
 
-    # 선택지표 추가
+    # 전체 데이터에 대해 기술적 지표를 한 번만 계산 (성능 최적화)
     if use_ta:
+        print("[seq] 전체 데이터에 대한 기술적 지표 계산 중...")
         df = add_features_1m(df)
 
-    # 다음 horizon 분 뒤 수익률/라벨
+    # 다음 horizon 분 뒤 수익률/라벨 계산
     future = df["close"].shift(-horizon)
     fwd_ret = (future - df["close"]) / df["close"]
     if up == 0.0 and dn == 0.0:
@@ -178,33 +219,49 @@ def build_seq_flat(
         labels[fwd_ret >= up] = 1
         labels[fwd_ret <= dn] = -1
 
-    # 윈도우 펼치기
+    # 윈도우에 포함할 컬럼 결정
     base_cols = ["open","high","low","close","volume","value"]
     feat_cols = base_cols.copy()
     if use_ta:
+        # 기술적 지표 컬럼 추가 (이미 계산 완료됨)
         extra = [c for c in df.columns if c not in set(base_cols + ["timestamp","timestamp_kst","fwd_ret","label"])]
         extra = [c for c in extra if pd.api.types.is_numeric_dtype(df[c])]
         feat_cols += extra
 
+    print(f"[seq] {len(feat_cols)}개 피처로 {n_steps}봉 윈도우 생성 중...")
+    
+    # 윈도우 펼치기 (벡터화된 방식으로 성능 향상)
     rows = []
+    total_windows = len(df) - horizon - n_steps + 1
+    
     for t in range(n_steps-1, len(df)-horizon):
+        if (t - n_steps + 1) % 5000 == 0:
+            progress = ((t - n_steps + 1) / total_windows) * 100
+            print(f"[seq] 진행률: {progress:.1f}% ({t - n_steps + 1}/{total_windows} 윈도우)")
+            
         start = t - (n_steps - 1)
-        win = df.iloc[start:t+1]   # 길이 n_steps
+        # 미리 계산된 지표들을 슬라이싱하여 윈도우 생성 (성능 최적화)
+        win_data = df.iloc[start:t+1]   # 길이 n_steps
+        
         flat = {}
         flat["timestamp"] = df.iloc[t]["timestamp"]
         # 백테스트 위해 현재 close를 보존 (다음봉 수익률 계산과 정합성)
         flat["close"] = float(df.iloc[t]["close"])
-        # 펼친 피처
-        for k, col in enumerate(feat_cols):
-            vals = win[col].values
+        
+        # 각 피처별로 윈도우 데이터를 펼쳐서 저장
+        for col in feat_cols:
+            vals = win_data[col].values
             for i, v in enumerate(vals):
                 flat[f"{col}_t{- (n_steps-1-i)}"] = float(v) if pd.notna(v) else np.nan
-        # 라벨/미래수익
+        
+        # 라벨 및 미래 수익률
         flat["fwd_ret"] = float(fwd_ret.iloc[t])
         flat["label"] = int(labels[t])
         rows.append(flat)
 
+    print(f"[seq] 총 {len(rows)}개 윈도우 생성 완료")
     out = pd.DataFrame(rows)
+    
     # 워밍업/NA 제거
     out = out.dropna(axis=1, how="all")
     # 클래스 극단적 불균형 방지용 간단 필터(선택): 필요 시 주석 해제

@@ -5,20 +5,30 @@ tools/backtest.py (final)
 - 거래 재구성(언제/왜 진입·청산했는지) + CSV/콘솔 출력
 - 자동 Markdown 리포트 생성(--auto_md --md_out 옵션)
 
-사용 예(PowerShell):
-  python -m tools.backtest `
-    --data data/dataset_mtf.parquet `
-    --model artifacts/model_mtf.joblib `
-    --meta artifacts/meta_mtf.json `
-    --fee 0.0005 `
-    --report artifacts/backtest_report_mtf.json `
-    --log_csv artifacts/trades_mtf.csv `
-    --print_trades 20 `
-    --auto_md `
-    --md_out artifacts/trades_mtf.md
+CLI 사용 예시:
+python tools/backtest.py `
+  --data data/dataset_mtf_h20_p03.parquet `
+  --model artifacts/model_mtf_h20_p03.joblib `
+  --meta artifacts/meta_mtf_h20_p03.json `
+  --scaler artifacts/scaler_mtf_h20_p03.joblib `
+  --fee 0.0005 `
+  --report artifacts/bt_mtf_h20_p03.json `
+  --log_csv artifacts/trades_mtf_h20_p03.csv `
+  --auto_md `
+  --md_out artifacts/trades_mtf_h20_p03.md
 
-    python tools/backtest.py --data data/dataset_mtf.parquet --model artifacts/model_mtf.joblib --meta artifacts/meta_mtf.json --scaler artifacts/scaler_mtf.joblib --fee 0.0005 --report artifacts/backtest_report_mtf.json --log_csv artifacts/trades_mtf.csv --print_trades 20 --auto_md --md_out artifacts/trades_mtf.md
-
+사용법:
+• train.py로 훈련된 모델의 백테스팅을 수행합니다
+• --data: 테스트용 데이터셋 (훈련과 동일한 데이터셋 사용)
+• --model: 훈련된 모델 파일 (.joblib)
+• --meta: 모델 메타데이터 (.json) - 임계값과 피처명 포함
+• --scaler: 스케일러 파일 (V2에서는 사용 안함, 호환용)
+• --fee: 거래 수수료 (0.0005 = 편도 0.05%)
+• --report: 백테스트 결과 요약 (.json)
+• --log_csv: 개별 거래 상세 로그 (.csv)
+• --auto_md: 자동 마크다운 리포트 생성
+• --md_out: 마크다운 리포트 저장 경로
+• 결과는 수익률, 거래 수, 승률 등을 포함합니다
 """
 
 import argparse

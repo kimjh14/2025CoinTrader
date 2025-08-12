@@ -1,3 +1,28 @@
+"""
+sweep.py - 하이퍼파라미터 스윕 및 최적화 도구
+
+CLI 사용 예시:
+python tools/sweep.py `
+  --data_1m data/krw_btc_1m.parquet `
+  --outdir artifacts/sweep_seq_ta `
+  --n_steps 3,5,7,10,15,20,25,30 `
+  --thresholds 0.0003,0.0005,0.0010 `
+  --allow_short 0 `
+  --fee 0.0005
+
+사용법:
+• 다양한 하이퍼파라미터 조합으로 자동 실험을 수행합니다
+• Sequence 모드로만 동작하며 build_dataset → train → backtest를 자동 실행
+• --data_1m: 원본 1분봉 데이터 (.parquet)
+• --outdir: 실험 결과 저장 폴더
+• --n_steps: 테스트할 윈도우 길이들 (쉼표로 구분)
+• --thresholds: 테스트할 라벨 임계값들 (쉼표로 구분)
+• --allow_short: 숏 허용 여부 (0=롱만, 1=롱/숏, 쉼표로 구분 가능)
+• --fee: 백테스트 수수료 (0.0005 = 0.05%)
+• 모든 조합을 테스트하고 최종 자본배수 기준으로 순위를 매깁니다
+• 결과는 summary.json에 저장되며 상위 10개 조합을 출력합니다
+"""
+
 # tools/sweep.py
 import argparse, itertools, json, os, subprocess, sys, time
 from pathlib import Path
