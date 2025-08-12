@@ -99,3 +99,19 @@ temp/
 
 V2_Based_with_CHATGPT/data/seq/*.parquet
 *.parquet
+
+# 데이터 폴더 - 학습 데이터셋 및 수집 데이터
+data/
+*/data/
+V1_Based_HKM/data/
+V2_Based_with_CHATGPT/data/
+
+# 아티팩트 폴더 - 모델 파일 및 학습 결과물
+artifacts/
+*/artifacts/
+V1_Based_HKM/artifacts/
+V2_Based_with_CHATGPT/artifacts/
+
+# 백테스팅 결과 폴더
+backtest_results/
+*/backtest_results/

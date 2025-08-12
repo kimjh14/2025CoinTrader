@@ -1,175 +1,62 @@
-# CLAUDE.md
+# CLAUDE.md - 개발 가이드라인
 
-이 파일은 Claude Code (claude.ai/code)가 이 저장소에서 작업할 때 참고할 가이드라인을 제공합니다.
+## 언어 사용 지침
 
-## 🇰🇷 언어 사용 지침
-
-**중요: 이 저장소에서 작업할 때는 반드시 한국어로 모든 응답과 설명을 제공해야 합니다.**
-
-- 모든 대화와 설명은 한국어로 진행
-- 코드 주석은 한국어로 작성
-- 오류 메시지와 로그도 가능한 한 한국어로 제공
-- 기술 문서와 README는 한국어로 작성
+**모든 작업은 한국어로 수행**
+- 모든 대화와 설명은 한국어
+- 코드 주석은 한국어
+- 오류 메시지와 로그도 한국어
 - 사용자와의 모든 상호작용은 한국어 우선
 
-## 프로젝트 개요
+# Claude Code 동작 규칙
 
-이 저장소는 **암호화폐 자동매매 시스템**을 위한 두 가지 접근 방식을 포함합니다:
+## 윈도우 환경 규칙 (필수)
+- **모든 경로는 윈도우 형식 사용**: `D:\python\2025CoinTrader` (슬래시 아님)
+- **PowerShell 줄바꿈은 백틱(`) 사용**: `\` 아님
+- **파일 경로 구분자는 백슬래시**: `tools\backtest.py`
+- **CLI 예시는 PowerShell 기준으로 작성**
 
-### V1_Based_HKM: 딥러닝 기반 시스템
-- **다중 타임프레임 Bi-LSTM 모델** 사용
-- 다양한 암호화폐 지원 (BTC, ETH, ADA, SOL 등)
-- 복합 기술적 지표 분석 (40+ 지표)
-- 백테스팅 및 실시간 거래 시스템
-
-### V2_Based_with_CHATGPT: 머신러닝 기반 시스템
-- **HistGradientBoostingClassifier** 모델 사용
-- KRW-BTC 특화 거래 시스템
-- Triple Barrier 라벨링 방식
-- 페이퍼 트레이딩 및 실시간 모니터링
-
-## 저장소 구조
-
-```
-2025CoinTrader/
-├── V1_Based_HKM/                    # 딥러닝 기반 시스템
-│   ├── tools/                      # 실행 도구들
-│   ├── ml/                         # ML 라이브러리
-│   ├── config/                     # 설정 파일들
-│   ├── artifacts/                  # 학습된 모델들
-│   ├── old/                        # 이전 버전들
-│   └── docs/                       # 문서 및 분석자료
-│
-├── V2_Based_with_CHATGPT/          # 머신러닝 기반 시스템
-│   ├── tools/                      # 실행 도구들
-│   ├── ml/                         # ML 라이브러리
-│   ├── data/                       # 데이터 파일들
-│   └── artifacts/                  # 결과물들
-│
-├── CLAUDE.md                       # 이 파일
-└── README.md                       # 프로젝트 개요
+### 올바른 PowerShell 명령어 예시
+```powershell
+python tools/backtest.py `
+  --data data/classic/dataset.parquet `
+  --model artifacts/model.joblib `
+  --fee 0.0005
 ```
 
-# V1_Based_HKM 시스템
-
-## 핵심 특징
-- **AI 모델**: 다중 타임프레임 Bi-LSTM (양방향 LSTM 2층)
-- **지원 코인**: BTC, ETH, SOL, XRP, ADA, DOGE 등
-- **타임프레임**: 1분~일봉 다중 분석
-- **기술적 지표**: 40+ 지표 (MACD, RSI, 볼린저밴드 등)
-
-## 주요 명령어
-
-### 환경 설정
+### 잘못된 예시 (사용 금지)
 ```bash
-cd V1_Based_HKM
-pip install -r requirements.txt
-python tools/test_setup.py
+python tools/backtest.py \
+  --data data/classic/dataset.parquet \
+  --model artifacts/model.joblib \
+  --fee 0.0005
 ```
 
-### 데이터 수집 및 모델 훈련
-```bash
-# 1. 데이터 수집
-python tools/run_data_collection.py
+## 코드 실행 규칙 (최우선)
+- **중요**: Claude Code는 코드 분석, 수정, 최적화만 수행
+- **모든 실행은 사용자가 직접 수행**: 특별히 해달라고 요청하지 않는 경우
+- Claude는 명령어 제안만 하고 직접 실행하지 않음
+- 코드 변경 후 테스트도 사용자가 직접 수행
+- 데이터셋 생성, 모델 학습, 백테스팅 등 모든 실행 작업은 사용자 책임
 
-# 2. 모델 훈련
-python tools/train_model.py
+## 행동 전 계획 확인 규칙 (필수)
+- **필수**: 어떤 행동을 하기 전에 반드시 계획을 먼저 제시
+- **사용자 승인**: 계획을 설명하고 진행해도 될지 사용자에게 확인 요청
+- **승인 후 진행**: 사용자가 승인한 후에만 실제 작업 수행
+- **예외 없음**: 파일 읽기, 코드 수정, 분석 등 모든 작업에 적용
+- 긴급하거나 간단한 작업도 예외 없이 계획 수립 후 승인 요청
 
-# 3. 학습 모니터링
-python tools/monitor_training.py
-```
-
-### 백테스팅 실행
-```bash
-# 개별 코인 백테스팅
-python tools/backtest_btc.py
-python tools/backtest_ada.py
-
-# 통합 백테스팅
-python tools/integrated_backtester.py
-```
-
-### 실시간 거래
-```bash
-# 실시간 거래 시스템
-python tools/live_trading.py
-
-# 실시간 예측
-python tools/live_predictor.py
-```
-
-## V1 아키텍처
-- **모델**: Bi-LSTM + Attention (Multi-head, 4 heads)
-- **출력**: 3-클래스 분류 (상승/하락/보합)
-- **성능**: 정확도 65-75%, F1 Score 0.6-0.7
-
-# V2_Based_with_CHATGPT 시스템
-
-## 핵심 특징
-- **AI 모델**: HistGradientBoostingClassifier
-- **타겟**: KRW-BTC 특화
-- **라벨링**: Triple Barrier 방식
-- **실시간**: 페이퍼 트레이딩 지원
-
-## 주요 명령어
-
-### 환경 설정
-```bash
-cd V2_Based_with_CHATGPT
-pip install -r requirements.txt
-```
-
-### 완전한 파이프라인 실행
-```bash
-# 1. 데이터 수집 (30일치 1분봉)
-python tools/collect.py --market KRW-BTC --minutes 1 --days 30 --out data/krw_btc_1m.parquet
-
-# 2. 피처 & 라벨 생성
-python tools/build_dataset.py --in data/krw_btc_1m.parquet --out data/dataset.parquet
-
-# 3. 모델 학습
-python tools/train.py --data data/dataset.parquet --model artifacts/model.joblib --scaler artifacts/scaler.joblib --meta artifacts/meta.json
-
-# 4. 백테스팅
-python tools/backtest.py --data data/dataset.parquet --model artifacts/model.joblib --scaler artifacts/scaler.joblib --report artifacts/backtest_report.json
-
-# 5. 실시간 페이퍼 트레이딩
-python tools/live_paper.py --market KRW-BTC --model artifacts/model.joblib --scaler artifacts/scaler.joblib
-```
-
-## V2 아키텍처
-- **모델**: HistGradientBoostingClassifier + CalibratedClassifierCV
-- **피처**: EMA, MACD, RSI, Bollinger Bands, ATR, VWAP, ADX
-- **라벨링**: Triple Barrier (상한/하한/시간) 기반 3-class 분류
-
-# 공통 설정 및 주의사항
-
-## API 설정
-두 시스템 모두 업비트 API 키가 필요합니다:
-```python
-# config/ 폴더의 설정 파일에서
-UPBIT_ACCESS_KEY = "your_access_key"
-UPBIT_SECRET_KEY = "your_secret_key"
-```
-
-## 하드웨어 요구사항
-- **V1**: GPU 권장 (NVIDIA CUDA 11.8+), RAM 16GB 권장
-- **V2**: CPU만으로도 가능, RAM 8GB 이상
-
-## 투자 위험 경고
-1. **높은 위험**: 암호화폐 투자는 높은 위험을 수반하며 손실이 발생할 수 있습니다
-2. **백테스팅 한계**: 과거 성과가 미래 수익을 보장하지 않습니다
-3. **실전 거래**: 슬리피지 및 수수료를 고려해야 합니다
-4. **API 제한**: 업비트 API 호출 제한을 준수해야 합니다
-
-## 개발 가이드라인
-
-### 코드 스타일
+## 코드 스타일 및 출력 규칙
 - 모든 주석과 문서는 한국어로 작성
 - 함수명과 변수명은 영어, 설명은 한국어
 - 로깅과 에러 메시지는 한국어 우선
+- **이모지를 출력에 넣지 말것**
+- **최대한 필요한 내용만 프린트할 것**
+- 불필요한 설명이나 부연설명 최소화
 
-### 테스트
+## 개발 가이드라인
+
+### 테스트 (사용자 직접 실행)
 ```bash
 # V1 시스템 테스트
 cd V1_Based_HKM && python tools/test_setup.py
@@ -178,7 +65,7 @@ cd V1_Based_HKM && python tools/test_setup.py
 cd V2_Based_with_CHATGPT && python -c "from tools.config import Config; print(Config.TARGET_COINS)"
 ```
 
-### 성능 모니터링
+### 성능 모니터링 (사용자 직접 실행)
 - V1: `tools/monitor_training.py`로 학습 과정 모니터링
 - V2: `tools/backtest.py`로 백테스팅 성능 확인
 

@@ -1,21 +1,32 @@
 
 """
-collect.py - 업비트 OHLCV 데이터 수집 도구
+collect.py - 업비트 OHLCV 데이터 수집 도구 (최적화)
 
 CLI 사용 예시:
+
 python tools/collect.py `
   --market KRW-BTC `
   --minutes 1 `
-  --days 30 `
-  --out data/raw/krw_btc_1m.parquet
+  --days 180 `
+  --out data/raw/krw_btc_1m_180d.parquet
 
 사용법:
-• 업비트에서 암호화폐 1분봉 데이터를 수집합니다
-• --market: 거래 마켓 (KRW-BTC, KRW-ETH 등)
-• --minutes: 분봉 단위 (1분봉만 지원)
-• --days: 수집할 기간 (일 단위)
-• --out: 저장할 파일 경로 (.parquet 권장)
-• 수집된 데이터는 build_dataset.py의 입력으로 사용됩니다
+• 업비트 공개 API에서 암호화폐 1분봉 OHLCV 데이터를 수집합니다
+• API 키 불필요: 공개 데이터 수집이므로 인증 없이 사용 가능
+• 자동 재시도: 네트워크 오류 시 자동으로 재시도 (5회)
+• 안정적 수집: rate limit 준수로 안정적 데이터 수집
+
+매개변수:
+• --market: 거래 마켓 (KRW-BTC, KRW-ETH, KRW-ADA, KRW-SOL 등)
+• --minutes: 분봉 단위 (현재 1분봉만 지원)
+• --days: 수집 기간 (일 단위, 권장: 180-270일)
+• --out: 저장 경로 (.parquet 형식 권장)
+
+출력 데이터:
+• timestamp: UTC 시간 (timezone aware)
+• open, high, low, close: OHLC 가격
+• volume: 거래량, value: 거래금액
+• build_dataset.py의 직접 입력으로 사용 가능
 """
 
 import argparse
@@ -106,7 +117,7 @@ def fetch_upbit_minutes(market="KRW-BTC", unit=1, count=200, to_utc_isoz: Option
         "volume": df["candle_acc_trade_volume"],
         "value": df["candle_acc_trade_price"],
     })
-    out["timestamp"] = pd.to_datetime(df["candle_date_time_utc"]).dt.tz_localize("UTC")
+    out["timestamp"] = pd.to_datetime(df["candle_date_time_utc"], format="%Y-%m-%dT%H:%M:%S").dt.tz_localize("UTC")
     out = out.sort_values("timestamp").reset_index(drop=True)
     return out
 
