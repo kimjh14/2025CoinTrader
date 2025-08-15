@@ -55,23 +55,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
-
-# scikit-learn 버전 호환성 처리
-try:
-    from sklearn.frozen import FrozenEstimator  # scikit-learn 1.6+
-except ImportError:
-    print("[경고] scikit-learn < 1.6 환경, FrozenEstimator 미지원 -> CalibratedClassifierCV fallback")
-    FrozenEstimator = None
-
-# 프로젝트 레이아웃 기준: tools/ 에서 ml/ 모듈 import
-import sys
-from pathlib import Path
-THIS_DIR = Path(__file__).resolve().parent
-ROOT_DIR = THIS_DIR.parent
-sys.path.append(str(ROOT_DIR))  # V2_Based_with_CHATGPT/ 를 모듈 루트로
-
-# 공용 PnL 유틸리티 사용
-from ml.pnl_utils import calculate_equity_from_proba, calculate_next_open_pnl
+from sklearn.frozen import FrozenEstimator  # scikit-learn 1.6+
 
 
 def load_dataset(path):
@@ -91,22 +75,19 @@ def profit_weights(fwd_ret, alpha=8.0, target=0.003, cap=3.0):
 
 
 def quick_equity_from_proba(
-    proba, prices_df, fee=0.0005, allow_short=False, long_p=0.6, short_p=0.6, class_index=None
+    p_long, p_short=None, ret=None, fee=0.0005, allow_short=False, long_p=0.6, short_p=0.6
 ):
-    """공용 PnL 함수를 사용한 에쿼티 계산 (다음 봉 시가 체결)"""
-    if class_index is None:
-        # 기본 클래스 인덱스 (0: short, 1: flat, 2: long)
-        class_index = {-1: 0, 0: 1, 1: 2}
-    
-    return calculate_equity_from_proba(
-        proba=proba,
-        prices=prices_df,
-        th_long=long_p,
-        th_short=short_p,
-        fee=fee,
-        class_index=class_index,
-        allow_short=allow_short
-    )
+    if allow_short and p_short is not None:
+        pred = np.where(p_long >= long_p, 1, np.where(p_short >= short_p, -1, 0))
+    else:
+        pred = (p_long >= long_p).astype(int)  # 롱 온리
+    pos = np.roll(pred, 1)
+    pos[0] = 0
+    r = np.nan_to_num(ret, nan=0.0)
+    gross = (1 + r * pos).cumprod()
+    trades = np.abs(np.diff(pos, prepend=0))
+    equity = gross * np.cumprod(1 - fee * trades)
+    return float(equity[-1])
 
 
 def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short=False, fee=0.0005):
@@ -133,9 +114,8 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
         dict(learning_rate=0.03, max_depth=10, l2_regularization=0.03, min_samples_leaf=120),
     ]
 
-    # 클래스 인덱스 매핑
-    class_index = {-1: 0, 0: 1, 1: 2}
-    
+    close_ret = pd.Series(df["close"]).pct_change().values
+
     for ps in params_grid:
         eq_cv = []
         for tr_idx, va_idx in tscv.split(X_tr):
@@ -157,48 +137,39 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
             )
             hgb.fit(X_tr_i, y_tr_i, sample_weight=w_tr_i)
 
-            # 확률 보정 (FrozenEstimator 호환성 처리)
-            if FrozenEstimator:
-                cal = CalibratedClassifierCV(FrozenEstimator(hgb), method="isotonic", cv=None)
-            else:
-                # sklearn < 1.6 fallback: 사전 학습된 모델 직접 사용
-                cal = CalibratedClassifierCV(hgb, method="isotonic", cv="prefit")
+            # 확률 보정 (FrozenEstimator로 사전학습 모델 감싸기)
+            cal = CalibratedClassifierCV(FrozenEstimator(hgb), method="isotonic", cv=None)
             cal.fit(X_va_i, y_va_i)
 
             proba = cal.predict_proba(X_va_i)
 
-            # 가격 데이터 준비 (다음 봉 시가 체결을 위해)
-            va_prices = df.iloc[va_idx][["open", "close"]].reset_index(drop=True)
-            
-            # 임계치 탐색 (롱/숏) - 공용 PnL 함수 사용 (최소 0.6)
-            longs = np.linspace(0.60, 0.80, 5)  # 0.60, 0.65, 0.70, 0.75, 0.80
-            shorts = np.linspace(0.60, 0.80, 5)  # 0.60, 0.65, 0.70, 0.75, 0.80
+            # 임계치 탐색 (롱/숏)
+            longs = np.linspace(0.50, 0.75, 6)
+            shorts = np.linspace(0.50, 0.75, 6)
             best_eq_split = -1
-            best_lp, best_sp = 0.65, 0.65  # 기본값 0.65
-            
+            best_lp, best_sp = 0.6, 0.6
             for lp in longs:
                 if allow_short:
                     for sp in shorts:
                         eq = quick_equity_from_proba(
-                            proba=proba,
-                            prices_df=va_prices,
+                            proba[:, 2],
+                            proba[:, 0],
+                            ret=close_ret[va_idx],
                             fee=fee,
                             allow_short=True,
                             long_p=lp,
                             short_p=sp,
-                            class_index=class_index
                         )
                         if eq > best_eq_split:
                             best_eq_split, best_lp, best_sp = eq, lp, sp
                 else:
                     eq = quick_equity_from_proba(
-                        proba=proba,
-                        prices_df=va_prices,
+                        proba[:, 2],
+                        None,
+                        ret=close_ret[va_idx],
                         fee=fee,
                         allow_short=False,
                         long_p=lp,
-                        short_p=sp,  # allow_short=False일 때는 사용 안됨
-                        class_index=class_index
                     )
                     if eq > best_eq_split:
                         best_eq_split, best_lp = eq, lp
@@ -221,98 +192,30 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
         random_state=42,
     )
     hgb.fit(X_tr, y_tr, sample_weight=w_tr)
-    
-    # 확률 보정 (FrozenEstimator 호환성 처리)
-    if FrozenEstimator:
-        cal = CalibratedClassifierCV(FrozenEstimator(hgb), method="isotonic", cv=None).fit(X_tr, y_tr)
-    else:
-        # sklearn < 1.6 fallback
-        cal = CalibratedClassifierCV(hgb, method="isotonic", cv="prefit").fit(X_tr, y_tr)
+    cal = CalibratedClassifierCV(FrozenEstimator(hgb), method="isotonic", cv=None).fit(X_tr, y_tr)
 
     # 홀드아웃 성능 + 임계치 재탐색 → meta에 저장
     proba_ho = cal.predict_proba(X_ho)
-    ho_prices = df.iloc[split_idx:][["open", "close"]].reset_index(drop=True)
-    
-    # 적응적 임계치 탐색 범위 (최소 0.6 이상)
-    longs = np.linspace(0.60, 0.85, 6)  # 0.60, 0.65, 0.70, 0.75, 0.80, 0.85
-    shorts = np.linspace(0.60, 0.85, 6)  # 0.60, 0.65, 0.70, 0.75, 0.80, 0.85
-    best_eq, best_lp, best_sp = -1, 0.65, 0.65  # 기본값도 0.65로
+    longs = np.linspace(0.50, 0.80, 7)
+    shorts = np.linspace(0.50, 0.80, 7)
+    best_eq, best_lp, best_sp = -1, 0.6, 0.6
+    r_ho = close_ret[split_idx:]
 
     if allow_short:
         for lp in longs:
             for sp in shorts:
                 eq = quick_equity_from_proba(
-                    proba=proba_ho,
-                    prices_df=ho_prices,
-                    fee=fee,
-                    allow_short=True,
-                    long_p=lp,
-                    short_p=sp,
-                    class_index=class_index
+                    proba_ho[:, 2], proba_ho[:, 0], r_ho, fee=fee, allow_short=True, long_p=lp, short_p=sp
                 )
                 if eq > best_eq:
                     best_eq, best_lp, best_sp = eq, lp, sp
     else:
         for lp in longs:
             eq = quick_equity_from_proba(
-                proba=proba_ho,
-                prices_df=ho_prices,
-                fee=fee,
-                allow_short=False,
-                long_p=lp,
-                short_p=sp,  # allow_short=False일 때는 사용 안됨
-                class_index=class_index
+                proba_ho[:, 2], None, r_ho, fee=fee, allow_short=False, long_p=lp
             )
             if eq > best_eq:
                 best_eq, best_lp = eq, lp
-    
-    # 경계값에서 최적값 발견 시 범위 확장 재탐색
-    # 롱 임계치 확장
-    if best_lp >= 0.80:
-        extended_longs = np.linspace(0.80, 0.92, 5)  # 0.80, 0.83, 0.86, 0.89, 0.92
-        for lp in extended_longs:
-            if allow_short:
-                for sp in shorts:
-                    eq = quick_equity_from_proba(
-                        proba=proba_ho,
-                        prices_df=ho_prices,
-                        fee=fee,
-                        allow_short=True,
-                        long_p=lp,
-                        short_p=sp,
-                        class_index=class_index
-                    )
-                    if eq > best_eq:
-                        best_eq, best_lp, best_sp = eq, lp, sp
-            else:
-                eq = quick_equity_from_proba(
-                    proba=proba_ho,
-                    prices_df=ho_prices,
-                    fee=fee,
-                    allow_short=False,
-                    long_p=lp,
-                    short_p=sp,  # allow_short=False일 때는 사용 안됨
-                    class_index=class_index
-                )
-                if eq > best_eq:
-                    best_eq, best_lp = eq, lp
-    
-    # 숏 임계치 확장 (allow_short일 때만)
-    if allow_short and best_sp >= 0.80:
-        extended_shorts = np.linspace(0.80, 0.92, 5)  # 0.80, 0.83, 0.86, 0.89, 0.92
-        for sp in extended_shorts:
-            # 최적 롱 임계치는 고정하고 숏만 확장 탐색
-            eq = quick_equity_from_proba(
-                proba=proba_ho,
-                prices_df=ho_prices,
-                fee=fee,
-                allow_short=True,
-                long_p=best_lp,
-                short_p=sp,
-                class_index=class_index
-            )
-            if eq > best_eq:
-                best_eq, best_sp = eq, sp
 
     # 간단 리포트 - 기본 임계값(0.5)
     y_pred_ho = cal.predict(X_ho)
@@ -321,7 +224,7 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
     print("Confusion matrix:\n", confusion_matrix(y_ho, y_pred_ho))
     
     # 최적 임계값으로 다시 예측
-    print(f"\n=== Classification report (최적 임계값: long_p={best_lp:.3f}, short_p={best_sp:.3f}) ===")
+    print(f"\n=== Classification report (최적 임계값: long_p={best_lp:.2f}, short_p={best_sp:.2f}) ===")
     
     # 최적 임계값으로 예측 생성
     if allow_short:
@@ -347,8 +250,8 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
     print(f"FLAT (대기): {n_flat} ({n_flat/total_samples*100:.1f}%)")
     print(f"총 거래 비율: {(n_long_trades+n_short_trades)/total_samples*100:.1f}%")
     
-    print(f"\nBest holdout equity={best_eq:.4f} with thresholds: long_p={best_lp:.3f}"
-        + (f", short_p={best_sp:.3f}" if allow_short else "")
+    print(f"\nBest holdout equity={best_eq:.4f} with thresholds: long_p={best_lp:.2f}"
+        + (f", short_p={best_sp:.2f}" if allow_short else "")
     )
 
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
@@ -363,12 +266,8 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
         "optimized_long_p": float(best_lp),
         "optimized_short_p": float(best_sp if allow_short else 0.6),
         "fee_used": float(fee),
-        "algo": "HistGradientBoostingClassifier + IsotonicCalibration",
+        "algo": "HistGradientBoostingClassifier + IsotonicCalibration (FrozenEstimator)",
         "params": best_model,
-        "execution_rule": "next_open",
-        "optimization_method": "equity_based_threshold_search",
-        "sklearn_version": "1.6+" if FrozenEstimator else "<1.6",
-        "notes": "체결: 다음 봉 시가, 임계치 탐색: 홀드아웃 에쿼티 최대화"
     }
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

@@ -7,18 +7,18 @@ CLI 사용 예시:
 python tools/collect.py `
   --market KRW-BTC `
   --minutes 1 `
-  --days 181 `
-  --out data/raw/krw_btc_1m_181d.parquet
+  --days 180 `
+  --out data/raw/krw_btc_1m_180d.parquet
 
 사용법:
-• 업비트 공개 API에서 암호화폐 OHLCV 데이터를 수집합니다
+• 업비트 공개 API에서 암호화폐 1분봉 OHLCV 데이터를 수집합니다
 • API 키 불필요: 공개 데이터 수집이므로 인증 없이 사용 가능
 • 자동 재시도: 네트워크 오류 시 자동으로 재시도 (5회)
 • 안정적 수집: rate limit 준수로 안정적 데이터 수집
 
 매개변수:
 • --market: 거래 마켓 (KRW-BTC, KRW-ETH, KRW-ADA, KRW-SOL 등)
-• --minutes: 분봉 단위 (1, 3, 5, 10, 15, 30, 60, 240분 지원)
+• --minutes: 분봉 단위 (현재 1분봉만 지원)
 • --days: 수집 기간 (일 단위, 권장: 180-270일)
 • --out: 저장 경로 (.parquet 형식 권장)
 
@@ -37,7 +37,6 @@ from typing import Optional
 
 import pandas as pd
 import requests
-import random
 
 try:
     import sys
@@ -81,10 +80,7 @@ def throttle_from_header(resp: requests.Response, rps_limit: Optional[float]=Non
         if sec_allow <= 0:
             time.sleep(1.02)
         elif sec_allow <= 2:
-            # Jitter 추가로 동시성 스파이크 방지
-            base_sleep = 0.12
-            jitter = random.uniform(-0.03, 0.08)  # ±30-80ms jitter
-            time.sleep(base_sleep + jitter)
+            time.sleep(0.12)
     # Optional manual cap (best-effort)
     if rps_limit and rps_limit > 0 and last_ts_holder is not None:
         now = time.time()
@@ -112,9 +108,8 @@ def fetch_upbit_minutes(market="KRW-BTC", unit=1, count=200, to_utc_isoz: Option
     if not js:
         return pd.DataFrame()
     df = pd.DataFrame(js)
-    # KST를 기본 timestamp로 사용
     out = pd.DataFrame({
-        "timestamp": pd.to_datetime(df["candle_date_time_kst"]).dt.tz_localize("Asia/Seoul"),  # KST가 기본
+        "timestamp_kst": pd.to_datetime(df["candle_date_time_kst"]).dt.tz_localize("Asia/Seoul"),
         "open": df["opening_price"],
         "high": df["high_price"],
         "low": df["low_price"],
@@ -122,68 +117,46 @@ def fetch_upbit_minutes(market="KRW-BTC", unit=1, count=200, to_utc_isoz: Option
         "volume": df["candle_acc_trade_volume"],
         "value": df["candle_acc_trade_price"],
     })
-    # UTC는 보조 컴럼 (필요시 사용)
-    out["timestamp_utc"] = pd.to_datetime(df["candle_date_time_utc"], format="%Y-%m-%dT%H:%M:%S").dt.tz_localize("UTC")
+    out["timestamp"] = pd.to_datetime(df["candle_date_time_utc"], format="%Y-%m-%dT%H:%M:%S").dt.tz_localize("UTC")
     out = out.sort_values("timestamp").reset_index(drop=True)
     return out
 
-def floor_minute(dt_utc: datetime) -> datetime:
-    # 완성된 봉만 수집하기 위해 현재 분의 0초로 내림
-    return dt_utc.replace(second=0, microsecond=0)
+def ceil_minute(dt_utc: datetime) -> datetime:
+    # Upbit candle boundaries are minute-based; align to next minute to be safe
+    return dt_utc.replace(second=0, microsecond=0) + timedelta(minutes=1) if (dt_utc.second or dt_utc.microsecond) else dt_utc
 
 def collect_days_fast(market="KRW-BTC", unit=1, days=1, verbose=True, rps_limit: Optional[float]=None) -> pd.DataFrame:
     """
     Deterministic stepping:
-      to_utc starts at the current minute (floor) to get only completed candles.
+      to_utc starts at the *next minute* after now (exclusive).
       Each page, subtract exactly 200*unit minutes from `to_utc`.
     """
     now_utc = datetime.now(timezone.utc)
-    now_kst = now_utc.astimezone(timezone(timedelta(hours=9)))  # KST = UTC+9
     start_utc = now_utc - timedelta(days=days)
-    start_kst = start_utc.astimezone(timezone(timedelta(hours=9)))
-    
-    # 현재 분의 시작(완성된 봉만 가져오기 위해)
-    to_anchor = floor_minute(now_utc)
+    # Start from the next minute boundary to avoid edge duplication
+    to_anchor = ceil_minute(now_utc)
     to_utc = to_anchor.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     frames = []
     page = 0
     # holder for simple rps limiter timestamp
     last_ts_holder = [None]
-    
-    # 메트릭 초기화
-    api_calls = 0
-    retry_count = 0
-    start_time = time.time()
 
     # Estimate pages: ceil( minutes_needed / (200*unit) )
     minutes_needed = int((to_anchor - start_utc).total_seconds() // 60)
     est_pages = (minutes_needed + (200*unit) - 1) // (200*unit)
     if verbose:
-        print(f"[수집 계획] {now_kst.strftime('%Y-%m-%d %H:%M:%S KST')} 기준")
-        print(f"[수집 범위] {start_kst.strftime('%Y-%m-%d %H:%M:%S KST')} ~ {now_kst.strftime('%Y-%m-%d %H:%M:%S KST')}")
-        print(f"[예상 페이지] 약 {est_pages}개 (총 {minutes_needed:,}분, 페이지당 {200*unit}분)")
-        # 첫 번째 요청 URL 표시
-        print(f"[첫 요청 URL] https://api.upbit.com/v1/candles/minutes/{unit}?market={market}&count=200&to={to_utc}")
+        print(f"[plan] need about ~{est_pages} pages (minutes={minutes_needed}, step={200*unit})")
 
     while True:
         page += 1
-        
-        # 마지막 페이지 최적화: 남은 분 수 계산
-        remaining_minutes = int((to_anchor - (page-1)*timedelta(minutes=200*unit) - start_utc).total_seconds() // 60)
-        optimal_count = min(200, max(1, remaining_minutes // unit))
-        
         try:
-            api_calls += 1
-            if optimal_count < 200 and verbose:
-                print(f"[opt] page {page}: requesting only {optimal_count} candles")
-            df = fetch_upbit_minutes(market, unit, optimal_count, to_utc, rps_limit, last_ts_holder)
+            df = fetch_upbit_minutes(market, unit, 200, to_utc, rps_limit, last_ts_holder)
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            retry_count += 1
             if verbose:
-                print(f"[warn] page {page} fetch failed: {e}. retry in 1s... (retry #{retry_count})")
+                print(f"[warn] page {page} fetch failed: {e}. retry in 1s...")
             time.sleep(1.0)
             page -= 1
             continue
@@ -194,19 +167,12 @@ def collect_days_fast(market="KRW-BTC", unit=1, days=1, verbose=True, rps_limit:
             break
 
         frames.append(df)
-        # KST 시간으로 표시 및 비교
-        oldest_kst = df["timestamp"].min()  # 이제 timestamp가 KST
-        newest_kst = df["timestamp"].max()
+        oldest_utc = df["timestamp"].min()
+        newest_utc = df["timestamp"].max()
         if verbose:
-            # KST 시간으로 출력 (보기 편하게)
-            oldest_str = oldest_kst.strftime("%Y-%m-%d %H:%M:%S KST")
-            newest_str = newest_kst.strftime("%Y-%m-%d %H:%M:%S KST")
-            print(f"[page {page}/{est_pages}] rows={len(df)} {oldest_str} ~ {newest_str}")
-        
-        # 비교도 KST로 (내부 로직)
-        # start_utc를 KST로 변환해서 비교
-        start_kst_tz = start_utc.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=9)))
-        if oldest_kst.tz_localize(None) <= start_kst_tz.replace(tzinfo=None):
+            print(f"[page {page}/{est_pages}] rows={len(df)} {oldest_utc} ~ {newest_utc}")
+
+        if oldest_utc <= start_utc:
             break
 
         # Deterministic step: go exactly one page span back
@@ -218,26 +184,11 @@ def collect_days_fast(market="KRW-BTC", unit=1, days=1, verbose=True, rps_limit:
         return pd.DataFrame()
 
     data = pd.concat(frames).drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
-    
-    # KST 기준으로 필터링
-    start_kst_tz = start_utc.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=9)))
-    data = data[data["timestamp"].dt.tz_localize(None) >= start_kst_tz.replace(tzinfo=None)].reset_index(drop=True)
-    
-    # timestamp는 이미 KST (collect에서 설정됨)
-    # timestamp_kst 컴럼은 호환성을 위해 추가 (동일한 값)
-    data["timestamp_kst"] = data["timestamp"]
-    
-    # 메트릭 로깅
-    if verbose:
-        elapsed_time = time.time() - start_time
-        avg_wait = elapsed_time / api_calls if api_calls > 0 else 0
-        print(f"\n[수집 완료 메트릭]")
-        print(f"- 총 API 호출: {api_calls}회")
-        print(f"- 429 재시도: {retry_count}회")
-        print(f"- 총 소요시간: {elapsed_time:.1f}초")
-        print(f"- 평균 대기시간: {avg_wait:.3f}초/호출")
-        print(f"- 수집 데이터: {len(data)}개 행")
-    
+    data = data[data["timestamp"] >= start_utc].reset_index(drop=True)
+    try:
+        data["timestamp_kst"] = data["timestamp"].dt.tz_convert("Asia/Seoul")
+    except Exception:
+        pass
     return data
 
 def main():
@@ -250,30 +201,21 @@ def main():
     ap.add_argument("--rps", type=float, default=None, help="cap requests per second (optional)")
     args = ap.parse_args()
 
-    # 실행 시작 시간을 가장 먼저 표시 (초 단위까지)
-    start_time_kst = datetime.now(timezone(timedelta(hours=9)))
-    print(f"\n[실행 시간] {start_time_kst.strftime('%Y-%m-%d %H:%M:%S KST')}")
-    print(f"[설정] market={args.market}, 봉={args.minutes}분, 기간={args.days}일")
+    print(f"[start-fast] market={args.market} unit={args.minutes}m days={args.days}")
     try:
         df = collect_days_fast(args.market, args.minutes, args.days, verbose=not args.quiet, rps_limit=args.rps)
     except KeyboardInterrupt:
-        print("[중단] 사용자에 의해 중단됨")
+        print("[abort] interrupted by user.")
         return
 
-    print(f"[결과] 총 {len(df):,}개 행 수집")
+    print("total rows:", len(df))
     if len(df) == 0:
-        print("[오류] 데이터가 수집되지 않음. 네트워크/프록시/방화벽 확인 또는 --days 값 줄이기")
+        print("[error] no data fetched. Check network/proxy/firewall or try smaller --days")
         return
-    
-    # 수집된 데이터 범위 표시 (KST)
-    if "timestamp" in df.columns:
-        oldest_kst = df["timestamp"].min()  # timestamp가 이미 KST
-        newest_kst = df["timestamp"].max()
-        print(f"[데이터 범위] {oldest_kst.strftime('%Y-%m-%d %H:%M:%S KST')} ~ {newest_kst.strftime('%Y-%m-%d %H:%M:%S KST')}")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     df.to_parquet(args.out, index=False)
-    print(f"[저장 완료] {args.out}")
+    print("saved ->", args.out)
 
 if __name__ == "__main__":
     main()

@@ -121,14 +121,14 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         proba_signal = model.predict_proba(X_signal)
         
         print(f"\n=== 신호 시점 모델 예측 ===")
-        print(f"P_SHORT: {proba_signal[0][0]*100:.1f}%")
-        print(f"P_FLAT:  {proba_signal[0][1]*100:.1f}%")
-        print(f"P_LONG:  {proba_signal[0][2]*100:.1f}%")
+        print(f"P_SHORT: {proba_signal[0][0]:.6f} ({proba_signal[0][0]*100:.2f}%)")
+        print(f"P_FLAT:  {proba_signal[0][1]:.6f} ({proba_signal[0][1]*100:.2f}%)")
+        print(f"P_LONG:  {proba_signal[0][2]:.6f} ({proba_signal[0][2]*100:.2f}%)")
         
         if side == "LONG":
-            print(f"\n진입 결정: P_LONG={proba_signal[0][2]:.3f} >= 임계값 → 다음 봉 시가에서 매수!")
+            print(f"\n진입 결정: P_LONG={proba_signal[0][2]:.6f} >= 임계값 → 다음 봉 시가에서 매수!")
         else:
-            print(f"\n진입 결정: P_SHORT={proba_signal[0][0]:.3f} >= 임계값 → 다음 봉 시가에서 매도!")
+            print(f"\n진입 결정: P_SHORT={proba_signal[0][0]:.6f} >= 임계값 → 다음 봉 시가에서 매도!")
         
         # 보유 기간 중 가격 변화 추적
         print(f"\n=== 보유 기간 중 가격 변화 ===")
@@ -161,10 +161,11 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
                     p_signal = proba_sample[0][0]
                     signal_name = "P_SHORT"
                 
-                print(f"{timestamp.strftime('%H:%M')} | {price:,.0f}원 ({profit_pct:+.2f}%) | {signal_name}={p_signal:.3f}")
+                print(f"{timestamp.strftime('%H:%M')} | {price:,.0f}원 ({profit_pct:+.2f}%) | {signal_name}={p_signal:.6f}")
         
-        # 청산 신호 시점 분석 (청산 1분 전 = 신호 발생 시점)
-        exit_signal_time = exit_time - pd.Timedelta(minutes=1)
+        # 청산 신호 시점 분석
+        # backtest.py에서 pos_shift 때문에 실제 신호는 청산 시점에 발생
+        exit_signal_time = exit_time
         exit_signal_idx = df[df['timestamp'] == exit_signal_time].index
         if len(exit_signal_idx) == 0:
             time_diff = abs(df['timestamp'] - exit_signal_time)
@@ -181,7 +182,7 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         exit_open = df.iloc[exit_idx[0]]['open']
         
         print(f"\n=== 청산 신호 시점 ({exit_signal_time}) 분석 ===")
-        print(f"(실제 청산은 {exit_time}에 실행)")
+        print(f"(청산 신호와 실행이 동시에 발생 - pos_shift 효과)")
         print(f"신호 발생 시점 종가: {exit_signal_row['close']:,.0f}원")
         print(f"다음 봉 시가 (실제 청산가): {exit_open:,.0f}원")
         print(f"백테스트 청산가: {exit_price:,.0f}원 (동일하게 다음 봉 시가)")
@@ -193,19 +194,26 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         proba_exit_signal = model.predict_proba(X_exit_signal)
         
         print(f"\n=== 청산 신호 시점 모델 예측 ===")
-        print(f"P_SHORT: {proba_exit_signal[0][0]*100:.1f}%")
-        print(f"P_FLAT:  {proba_exit_signal[0][1]*100:.1f}%")
-        print(f"P_LONG:  {proba_exit_signal[0][2]*100:.1f}%")
+        print(f"P_SHORT: {proba_exit_signal[0][0]:.6f} ({proba_exit_signal[0][0]*100:.2f}%)")
+        print(f"P_FLAT:  {proba_exit_signal[0][1]:.6f} ({proba_exit_signal[0][1]*100:.2f}%)")
+        print(f"P_LONG:  {proba_exit_signal[0][2]:.6f} ({proba_exit_signal[0][2]*100:.2f}%)")
         
         if side == "LONG":
-            print(f"\n청산 결정: P_LONG={proba_exit_signal[0][2]:.3f} < 임계값 → 다음 봉 시가에서 매도!")
+            print(f"\n청산 결정: P_LONG={proba_exit_signal[0][2]:.6f} < 임계값 → 다음 봉 시가에서 매도!")
         else:
-            print(f"\n청산 결정: P_SHORT={proba_exit_signal[0][0]:.3f} < 임계값 → 다음 봉 시가에서 매수!")
+            print(f"\n청산 결정: P_SHORT={proba_exit_signal[0][0]:.6f} < 임계값 → 다음 봉 시가에서 매수!")
         
         print(f"\n=== 거래 요약 ===")
         print(f"진입 이유: {trade['entry_reason']}")
         print(f"청산 이유: {trade['exit_reason']}")
         print(f"실제 결과: {hold_minutes:.0f}분 만에 {net_ret*100:+.2f}% 수익!")
+        
+        # CSV의 exit_reason에 있는 p_long 값과 비교
+        if 'p_long=' in trade['exit_reason']:
+            csv_p_long = trade['exit_reason'].split('p_long=')[1].split(' ')[0]
+            print(f"\n[검증] CSV의 청산 시점 P_LONG: {csv_p_long}")
+            print(f"[검증] 분석 도구의 청산 시점 P_LONG: {proba_exit_signal[0][2]:.6f}")
+            print(f"[검증] 일치 여부: {'일치' if abs(float(csv_p_long) - proba_exit_signal[0][2]) < 0.001 else '불일치'}")
 
 def main():
     parser = argparse.ArgumentParser(description="백테스트 최고 수익 거래 분석")

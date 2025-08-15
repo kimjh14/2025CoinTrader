@@ -1,57 +1,133 @@
 """
-batch_train.py - 30개 조합 일괄 모델 학습 도구
+batch_train.py - 일괄 모델 학습 도구
 
 CLI 사용 예시:
+
+# SEQ 모드
 python tools/batch_train.py `
+  --mode seq `
   --data_dir data/seq `
   --output_dir artifacts/train `
   --splits 4 `
   --fee 0.0005
 
+# CLASSIC 모드
+python tools/batch_train.py `
+  --mode classic `
+  --data_dir data/classic `
+  --output_dir artifacts/train `
+  --splits 4 `
+  --fee 0.0005 `
+  --allow_short
+
 사용법:
-• batch_data.py로 생성된 30개 데이터셋을 모두 학습합니다
-• N_STEPS: [5, 10, 15, 20, 30, 60] x HORIZON: [1, 3, 5, 10, 15]
+• batch_data.py로 생성된 데이터셋 중 선택된 조합만 학습합니다
+• 상단 변수 설정으로 원하는 조합만 선택 가능
 • 각 조합마다 model, scaler, meta 파일 생성
 • HistGradientBoostingClassifier + 확률 보정 사용
-• 실행 시간: 약 30-60분 소요
 
 출력:
-• 30개 모델 파일 (model_seq_n{N}_h{H}.joblib)
-• 30개 스케일러 파일 (scaler_seq_n{N}_h{H}.joblib)
-• 30개 메타데이터 파일 (meta_seq_n{N}_h{H}.json)
+• 모델 파일 (model_{mode}_{params}.joblib)
+• 스케일러 파일 (scaler_{mode}_{params}.joblib)
+• 메타데이터 파일 (meta_{mode}_{params}.json)
 • 학습 결과 요약 리포트
 """
 
 import os
+import sys
 import subprocess
-import pandas as pd
-import time
+import glob
+import re
+import argparse
 from pathlib import Path
 
-# 그리드 서치 파라미터
-N_STEPS_CANDIDATES = [5, 10, 15, 20, 30, 60]
-HORIZON_CANDIDATES = [1, 3, 5, 10, 15]
+# 현재 스크립트의 절대 경로 기준으로 프로젝트 루트 찾기
+SCRIPT_DIR = Path(__file__).resolve().parent  # tools 폴더
+ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 
-# 고정 파라미터
-BASE_DATA_DIR = "data/seq"  # 데이터셋 위치
-BASE_OUTPUT_DIR = "artifacts/train"  # train.py 출력 폴더
-SPLITS = 4
-FEE = 0.0005
+# ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
+# batch_data.py와 동일한 값 사용 권장
 
-def run_train_model(n_steps, horizon, data_path, model_path, scaler_path, meta_path):
+# 학습할 조합 선택 (None = 모든 조합, 리스트 = 선택된 값만)
+DAYS_TO_TRAIN = [181]  # 예: [181] 또는 None (모두)
+HORIZON_TO_TRAIN = [1, 3, 5, 10, 15, 20]   # 예: [1, 3, 5, 10, 15, 20] 또는 None (모두)
+THRESHOLD_TO_TRAIN = [0.001, 0.002, 0.003]  # 예: [0.001, 0.002, 0.003] 또는 None (모두)
+
+# SEQ 모드 전용
+N_STEPS_TO_TRAIN = None  # 예: [20, 30] 또는 None (모두)
+
+# 기본 파라미터
+DEFAULT_SPLITS = 4
+DEFAULT_FEE = 0.0005
+
+# ========================================================
+
+def extract_params_from_filename(filename, mode):
+    """파일명에서 파라미터 추출"""
+    if mode == "seq":
+        # dataset_seq_181d_h1_n20_0.001.parquet (one_click_pipeline.py 형식)
+        match = re.search(r'dataset_seq_(\d+)d_h(\d+)_n(\d+)_([\d.]+)\.parquet', filename)
+        if match:
+            return {
+                'days': int(match.group(1)),
+                'horizon': int(match.group(2)),
+                'n_steps': int(match.group(3)),
+                'threshold': float(match.group(4)),
+                'threshold_str': match.group(4)
+            }
+    else:  # classic
+        # dataset_mtf_181d_h1_0.001.parquet
+        match = re.search(r'dataset_mtf_(\d+)d_h(\d+)_([\d.]+)\.parquet', filename)
+        if match:
+            return {
+                'days': int(match.group(1)),
+                'horizon': int(match.group(2)),
+                'threshold': float(match.group(3)),
+                'threshold_str': match.group(3)
+            }
+    return None
+
+def should_process_file(params, mode):
+    """파라미터 기반으로 파일 처리 여부 결정"""
+    # Days 필터
+    if DAYS_TO_TRAIN is not None and params['days'] not in DAYS_TO_TRAIN:
+        return False
+    
+    # Horizon 필터
+    if HORIZON_TO_TRAIN is not None and params['horizon'] not in HORIZON_TO_TRAIN:
+        return False
+    
+    # Threshold 필터
+    if THRESHOLD_TO_TRAIN is not None:
+        # 부동소수점 비교를 위해 근사값 비교
+        threshold_match = any(abs(params['threshold'] - t) < 0.0001 for t in THRESHOLD_TO_TRAIN)
+        if not threshold_match:
+            return False
+    
+    # SEQ 모드 전용 N_STEPS 필터
+    if mode == "seq" and N_STEPS_TO_TRAIN is not None:
+        if params['n_steps'] not in N_STEPS_TO_TRAIN:
+            return False
+    
+    return True
+
+def run_train_model(data_path, model_path, scaler_path, meta_path, splits, fee, allow_short=False):
     """단일 모델 학습"""
     cmd = [
-        "python", "tools/train.py",
+        sys.executable, str(SCRIPT_DIR / "train.py"),
         "--data", data_path,
         "--model", model_path,
         "--scaler", scaler_path,
         "--meta", meta_path,
-        "--splits", str(SPLITS),
-        "--fee", str(FEE)
+        "--splits", str(splits),
+        "--fee", str(fee)
     ]
     
+    if allow_short:
+        cmd.append("--allow_short")
+    
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # 10분 타임아웃
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT_DIR))  # 10분 타임아웃
         if result.returncode == 0:
             return True, result.stdout
         else:
@@ -61,157 +137,81 @@ def run_train_model(n_steps, horizon, data_path, model_path, scaler_path, meta_p
     except Exception as e:
         return False, str(e)
 
-def analyze_model_performance(meta_path):
-    """모델 성능 분석"""
-    try:
-        import json
-        if not os.path.exists(meta_path):
-            return None, "메타 파일 없음"
-        
-        with open(meta_path, 'r', encoding='utf-8') as f:
-            meta = json.load(f)
-        
-        # 성능 지표 추출
-        stats = {
-            'optimized_long_p': meta.get('optimized_long_p', 0),
-            'best_equity_cv': 1.0000,  # train.py에서 저장하지 않으므로 더미값
-            'algo': meta.get('algo', 'Unknown'),
-            'feature_count': len(meta.get('features', [])),  # 'feature_names' -> 'features'
-            'allow_short': meta.get('allow_short', False),
-            'n_train': meta.get('n_train', 0),
-            'n_holdout': meta.get('n_holdout', 0)
-        }
-        
-        return stats, "성공"
-    except Exception as e:
-        return None, str(e)
 
 def main():
-    print(f"일괄 학습 시작: {len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES)}개 조합")
+    parser = argparse.ArgumentParser(description="일괄 모델 학습 도구")
+    parser.add_argument("--mode", type=str, required=True, choices=["seq", "classic"],
+                      help="학습 모드: seq 또는 classic")
+    parser.add_argument("--data_dir", type=str, required=True,
+                      help="데이터셋 디렉토리")
+    parser.add_argument("--output_dir", type=str, default="artifacts/train",
+                      help="출력 디렉토리")
+    parser.add_argument("--splits", type=int, default=DEFAULT_SPLITS,
+                      help="교차 검증 분할 수")
+    parser.add_argument("--fee", type=float, default=DEFAULT_FEE,
+                      help="거래 수수료")
+    parser.add_argument("--allow_short", action="store_true",
+                      help="숏 포지션 허용")
+    
+    args = parser.parse_args()
+    
     
     # 출력 디렉터리 생성
-    os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
     
-    results = []
-    total_combinations = len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES)
-    current_combination = 0
-    total_start_time = time.time()
+    # 데이터셋 파일 검색
+    if args.mode == "seq":
+        pattern = os.path.join(args.data_dir, "dataset_seq_*.parquet")
+    else:
+        pattern = os.path.join(args.data_dir, "dataset_mtf_*.parquet")
     
-    for n_steps in N_STEPS_CANDIDATES:
-        for horizon in HORIZON_CANDIDATES:
-            current_combination += 1
-            
-            # 파일명 규칙 (train.py CLI 스타일)
-            data_file = f"{BASE_DATA_DIR}/dataset_seq_n{n_steps}_h{horizon}.parquet"
-            model_file = f"{BASE_OUTPUT_DIR}/model_seq_n{n_steps}_h{horizon}.joblib"
-            scaler_file = f"{BASE_OUTPUT_DIR}/scaler_seq_n{n_steps}_h{horizon}.joblib"
-            meta_file = f"{BASE_OUTPUT_DIR}/meta_seq_n{n_steps}_h{horizon}.json"
-            
-            print(f"[{current_combination:2d}/{total_combinations}] n{n_steps}_h{horizon}")
-            
-            # 데이터셋 존재 확인
-            if not os.path.exists(data_file):
-                print(f"    SKIP: 데이터셋 없음")
-                results.append({
-                    'n_steps': n_steps,
-                    'horizon': horizon,
-                    'success': False,
-                    'error': '데이터셋 파일 없음',
-                    'model_path': model_file
-                })
-                continue
-            
-            start_time = time.time()
-            
-            # 모델 학습
-            success, message = run_train_model(n_steps, horizon, data_file, model_file, scaler_file, meta_file)
-            
-            if success:
-                # 성능 분석
-                stats, error = analyze_model_performance(meta_file)
-                
-                if stats:
-                    elapsed = time.time() - start_time
-                    print(f"    OK ({elapsed:.1f}s) CV={stats['best_equity_cv']:.4f}")
-                    
-                    results.append({
-                        'n_steps': n_steps,
-                        'horizon': horizon,
-                        'success': True,
-                        'model_path': model_file,
-                        **stats
-                    })
-                else:
-                    print(f"    WARN: 분석실패")
-                    results.append({
-                        'n_steps': n_steps,
-                        'horizon': horizon,
-                        'success': True,
-                        'model_path': model_file,
-                        'error': f"분석 실패: {error}"
-                    })
-            else:
-                print(f"    FAIL")
-                results.append({
-                    'n_steps': n_steps,
-                    'horizon': horizon,
-                    'success': False,
-                    'error': message,
-                    'model_path': model_file
-                })
+    all_files = glob.glob(pattern)
+    # 필터링
+    dataset_files = []
+    for file in all_files:
+        filename = os.path.basename(file)
+        params = extract_params_from_filename(filename, args.mode)
+        if params and should_process_file(params, args.mode):
+            dataset_files.append(file)
     
-    # 결과 요약
-    results_df = pd.DataFrame(results)
-    successful_results = results_df[results_df['success'] == True]
+    print(f"{args.mode.upper()} 모드: {len(dataset_files)}개 파일 학습 시작")
     
-    total_time = time.time() - total_start_time
+    if not dataset_files:
+        print("[ERROR] 필터 조건에 맞는 데이터셋 파일이 없습니다.")
+        return
     
-    print("=" * 70)
-    print("일괄 학습 결과 요약")
-    print("=" * 70)
-    print(f"총 시도: {len(results)}개")
-    print(f"성공: {len(successful_results)}개")
-    print(f"실패: {len(results) - len(successful_results)}개")
-    print(f"총 소요 시간: {total_time/60:.1f}분")
-    print()
     
-    if len(successful_results) > 0:
-        # 성능 기준 정렬
-        performance_cols = ['best_equity_cv', 'optimized_long_p']
-        available_cols = [col for col in performance_cols if col in successful_results.columns]
+    for idx, data_file in enumerate(sorted(dataset_files), 1):
+        filename = os.path.basename(data_file)
+        params = extract_params_from_filename(filename, args.mode)
         
-        if 'best_equity_cv' in successful_results.columns:
-            # 가장 높은 CV 성능
-            best_cv = successful_results.loc[successful_results['best_equity_cv'].idxmax()]
-            
-            print("TOP 추천 조합:")
-            print()
-            print(f"[1] 최고 CV 성능:")
-            print(f"   N_STEPS={best_cv['n_steps']}, HORIZON={best_cv['horizon']}")
-            print(f"   CV 성능: {best_cv['best_equity_cv']:.4f}")
-            print(f"   임계값: {best_cv['optimized_long_p']:.2f}")
-            print(f"   모델: {best_cv['model_path']}")
-            print()
-            
-            # 상위 5개 조합 표시
-            top5_cv = successful_results.nlargest(5, 'best_equity_cv')
-            print("CV 성능 기준 TOP 5:")
-            print("순위  N_STEPS  HORIZON  CV성능    임계값   피처수   모델파일")
-            print("-" * 80)
-            for i, (idx, row) in enumerate(top5_cv.iterrows(), 1):
-                model_name = os.path.basename(row['model_path'])
-                print(f"{i:2d}   {row['n_steps']:7d}  {row['horizon']:7d}  "
-                      f"{row['best_equity_cv']:7.4f}  {row['optimized_long_p']:6.2f}  "
-                      f"{row.get('feature_count', 0):6d}   {model_name}")
+        if not params:
+            print(f"[{idx}/{len(dataset_files)}] {filename} - 파일명 파싱 실패")
+            continue
+        
+        # 출력 파일명 생성 (one_click_pipeline.py 형식)
+        if args.mode == "seq":
+            base_name = f"seq_{params['days']}d_h{params['horizon']}_n{params['n_steps']}_{params['threshold_str']}"
+            display_name = f"d{params['days']}_h{params['horizon']}_n{params['n_steps']}_t{params['threshold_str']}"
+        else:
+            base_name = f"classic_{params['days']}d_h{params['horizon']}_{params['threshold_str']}"
+            display_name = f"d{params['days']}_h{params['horizon']}_t{params['threshold_str']}"
+        
+        model_file = os.path.join(args.output_dir, f"model_{base_name}.joblib")
+        scaler_file = os.path.join(args.output_dir, f"scaler_{base_name}.joblib")
+        meta_file = os.path.join(args.output_dir, f"meta_{base_name}.json")
+        
+        print(f"[{idx:3d}/{len(dataset_files)}] 처리 중...", end=" ")
+        
+        # 모델 학습
+        success, message = run_train_model(data_file, model_file, scaler_file, meta_file, args.splits, args.fee, args.allow_short)
+        
+        if success:
+            print(f"[OK]")
+        else:
+            print(f"[FAIL]")
     
-    # 결과를 CSV로 저장
-    results_csv = f"{BASE_OUTPUT_DIR}/batch_train_results.csv"
-    results_df.to_csv(results_csv, index=False, encoding='utf-8-sig')
-    print(f"\\n상세 결과 저장: {results_csv}")
-    
-    print("\\n일괄 모델 학습 완료!")
-    print(f"학습된 모델 위치: {BASE_OUTPUT_DIR}/")
-    print("파일명 형식: model_seq_n{N_STEPS}_h{HORIZON}.joblib")
+    print(f"\n배치 완료")
 
 if __name__ == "__main__":
     main()

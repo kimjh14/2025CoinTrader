@@ -1,58 +1,80 @@
 """
-batch_data.py - 30개 조합 일괄 데이터셋 생성 도구
+batch_data.py - 다중 파라미터 조합 일괄 데이터셋 생성 도구
 
 CLI 사용 예시:
+
+# SEQ 모드 (패턴 기반)
 python tools/batch_data.py `
-  --input data/raw/krw_btc_1m_180d.parquet `
-  --output_dir data/seq `
-  --up 0.0005 `
-  --dn -0.0005
+  --mode seq `
+  --input data/raw/krw_btc_1m_181d.parquet `
+  --output_dir data/seq
+
+# CLASSIC 모드 (기술적 지표 기반)  
+python tools/batch_data.py `
+  --mode classic `
+  --input data/raw/krw_btc_1m_181d.parquet `
+  --output_dir data/classic
 
 사용법:
-• N_STEPS x HORIZON 30개 조합으로 데이터셋을 일괄 생성합니다
-• N_STEPS: [5, 10, 15, 20, 30, 60] - 입력 패턴 길이
-• HORIZON: [1, 3, 5, 10, 15] - 예측 시점 (분)
-• 각 조합마다 dataset_seq_n{N}_h{H}.parquet 파일 생성
-• 실행 시간: 약 15-30분 소요
+• 공통 파라미터:
+  - HORIZON: [1, 3, 5, 10, 15] - 예측 시점 (분)
+  - THRESHOLD: [0.0003, 0.0005, 0.001, 0.002] - 라벨링 임계값 (±값)
+
+• SEQ 모드: N_STEPS x HORIZON x THRESHOLD 조합으로 데이터셋 생성
+  - N_STEPS: [5, 10, 15, 20, 30, 60] - 입력 패턴 길이
+  
+• CLASSIC 모드: HORIZON x TIMEFRAMES x THRESHOLD 조합으로 데이터셋 생성
+  - TIMEFRAMES: ["", "3", "3,5", "3,5,15"] - 멀티 타임프레임
 
 출력:
-• 30개 데이터셋 파일
+• 데이터셋 파일들
 • 생성 결과 요약 리포트
 • 실패한 조합 목록
 """
 
 import os
+import sys
 import subprocess
-import pandas as pd
 import time
+import argparse
 from pathlib import Path
 
-# 그리드 서치 파라미터
-N_STEPS_CANDIDATES = [5, 10, 15, 20, 30, 60]
-HORIZON_CANDIDATES = [1, 3, 5, 10, 15]
+# 현재 스크립트의 절대 경로 기준으로 프로젝트 루트 찾기
+SCRIPT_DIR = Path(__file__).resolve().parent  # tools 폴더
+ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 
-# 고정 파라미터
-INPUT_FILE = "data/raw/krw_btc_1m_5d.parquet"
-UP_THRESHOLD = 0.0005  # ±0.05%
-DN_THRESHOLD = -0.0005
-BASE_OUTPUT_DIR = "data/seq"  # build_dataset.py와 동일한 출력 폴더
+# ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
 
-def run_build_dataset(n_steps, horizon, output_path):
-    """단일 데이터셋 생성"""
+# 공통 파라미터
+HORIZON_CANDIDATES = [1, 3, 5, 10, 15, 20]  # 예측 시점 (분)
+THRESHOLD_CANDIDATES = [0.001, 0.002, 0.003]  # 라벨링 임계값 (±0.03%, ±0.05%, ±0.1%, ±0.2%)
+
+# SEQ 모드 전용 파라미터
+N_STEPS_CANDIDATES = [5, 10, 15, 20, 30, 60]  # 입력 패턴 길이
+
+# CLASSIC 모드 전용 파라미터  
+TIMEFRAMES_CANDIDATES = ["3,5"]  # 멀티 타임프레임 ("" = 1분봉만)
+
+# ========================================================
+
+# 기본 설정 - 입력 파일은 필수로 지정해야 함 (일수는 파일명에서 자동 추출)
+
+def run_build_dataset_seq(input_file, n_steps, horizon, threshold, output_path):
+    """SEQ 모드 데이터셋 생성"""
     cmd = [
-        "python", "tools/build_dataset.py",
+        sys.executable, str(SCRIPT_DIR / "build_dataset.py"),
         "--mode", "seq",
-        "--in", INPUT_FILE,
+        "--in", input_file,
         "--out", output_path,
         "--n_steps", str(n_steps),
         "--horizon", str(horizon),
-        "--up", str(UP_THRESHOLD),
-        "--dn", str(DN_THRESHOLD),
+        "--up", str(threshold),
+        "--dn", str(-threshold),  # DN은 UP의 음수값
         "--ta"
     ]
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=str(ROOT_DIR))
         if result.returncode == 0:
             return True, result.stdout
         else:
@@ -62,179 +84,143 @@ def run_build_dataset(n_steps, horizon, output_path):
     except Exception as e:
         return False, str(e)
 
-def analyze_dataset_distribution(file_path):
-    """데이터셋 클래스 분포 분석"""
+def run_build_dataset_classic(input_file, horizon, timeframes, threshold, output_path):
+    """CLASSIC 모드 데이터셋 생성"""
+    cmd = [
+        sys.executable, str(SCRIPT_DIR / "build_dataset.py"),
+        "--mode", "classic",
+        "--in", input_file,
+        "--out", output_path,
+        "--horizon", str(horizon),
+        "--up", str(threshold),
+        "--dn", str(-threshold)  # DN은 UP의 음수값
+    ]
+    
+    # 타임프레임이 있으면 추가
+    if timeframes:
+        cmd.extend(["--tfs", timeframes])
+    
     try:
-        df = pd.read_parquet(file_path)
-        if len(df) == 0:
-            return None, "빈 데이터셋"
-        
-        # 클래스 분포 계산
-        label_counts = df['label'].value_counts(normalize=True).sort_index()
-        
-        # 균형도 계산 (표준편차가 낮을수록 균형잡힘)
-        balance_score = label_counts.std()
-        
-        # 최소 클래스 비율 (너무 작으면 학습 어려움)
-        min_class_ratio = label_counts.min()
-        
-        return {
-            'total_rows': len(df),
-            'flat_ratio': label_counts.get('flat', 0),
-            'long_ratio': label_counts.get('long', 0), 
-            'short_ratio': label_counts.get('short', 0),
-            'balance_score': balance_score,
-            'min_class_ratio': min_class_ratio
-        }, "성공"
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=str(ROOT_DIR))
+        if result.returncode == 0:
+            return True, result.stdout
+        else:
+            return False, result.stderr
+    except subprocess.TimeoutExpired:
+        return False, "Timeout (5분 초과)"
     except Exception as e:
-        return None, str(e)
+        return False, str(e)
 
-def main():
-    print("30개 조합 일괄 데이터셋 생성 시작")
-    print(f"입력 파일: {INPUT_FILE}")
-    print(f"N_STEPS 후보: {N_STEPS_CANDIDATES}")
-    print(f"HORIZON 후보: {HORIZON_CANDIDATES}")
-    print(f"총 조합 수: {len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES)}개")
-    print()
+
+def extract_days_from_filename(input_file):
+    """입력 파일명에서 일수 추출 (예: krw_btc_1m_180d.parquet -> 180)"""
+    import re
+    match = re.search(r'_(\d+)d\.parquet', input_file)
+    if match:
+        return int(match.group(1))
+    else:
+        raise ValueError(f"파일명에서 일수를 추출할 수 없습니다: {input_file}\n"
+                        f"올바른 형식: krw_btc_1m_XXXd.parquet (예: krw_btc_1m_180d.parquet)")
+
+def run_seq_batch(input_file, output_dir):
+    """SEQ 모드 배치 실행"""
+    # 입력 파일명에서 일수 추출
+    days = extract_days_from_filename(input_file)
     
-    # 입력 파일 존재 확인
-    if not os.path.exists(INPUT_FILE):
-        print(f"[ERROR] 입력 파일이 없습니다: {INPUT_FILE}")
-        print("먼저 다음 명령으로 5일 데이터를 수집하세요:")
-        print("python tools/collect.py --market KRW-BTC --minutes 1 --days 5 --out data/raw/krw_btc_1m_5d.parquet")
-        return
+    total_combinations = len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES) * len(THRESHOLD_CANDIDATES)
+    print(f"SEQ 모드: {total_combinations}개 조합 처리 시작")
     
-    # 출력 디렉터리 생성
-    os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
-    
-    results = []
-    total_combinations = len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES)
     current_combination = 0
-    total_start_time = time.time()
     
     for n_steps in N_STEPS_CANDIDATES:
         for horizon in HORIZON_CANDIDATES:
-            current_combination += 1
-            
-            # 출력 파일명 (build_dataset.py 스타일)
-            output_file = f"{BASE_OUTPUT_DIR}/dataset_seq_n{n_steps}_h{horizon}.parquet"
-            
-            print(f"[{current_combination:2d}/{total_combinations}] N_STEPS={n_steps:2d}, HORIZON={horizon:2d} 처리 중...")
-            
-            start_time = time.time()
-            
-            # 데이터셋 생성
-            success, message = run_build_dataset(n_steps, horizon, output_file)
-            
-            if success:
-                # 클래스 분포 분석
-                stats, error = analyze_dataset_distribution(output_file)
+            for threshold in THRESHOLD_CANDIDATES:
+                current_combination += 1
                 
-                if stats:
-                    elapsed = time.time() - start_time
-                    total_elapsed = time.time() - total_start_time
-                    remaining = total_combinations - current_combination
-                    avg_time = total_elapsed / current_combination
-                    eta = remaining * avg_time
-                    
-                    print(f"    [OK] 완료 ({elapsed:.1f}s) | "
-                          f"총 {stats['total_rows']:,}행 | "
-                          f"균형도: {stats['balance_score']:.3f}")
-                    print(f"       분포 - Flat: {stats['flat_ratio']:.1%}, "
-                          f"Long: {stats['long_ratio']:.1%}, "
-                          f"Short: {stats['short_ratio']:.1%}")
-                    print(f"       진행률: {current_combination}/{total_combinations} | "
-                          f"ETA: {eta/60:.1f}분")
-                    
-                    results.append({
-                        'n_steps': n_steps,
-                        'horizon': horizon,
-                        'file_path': output_file,
-                        'success': True,
-                        **stats
-                    })
+                # 출력 파일명 (one_click_pipeline.py 규칙)
+                threshold_str = f"{threshold:.3f}".rstrip("0").rstrip(".")
+                output_file = f"{output_dir}/dataset_seq_{days}d_h{horizon}_n{n_steps}_{threshold_str}.parquet"
+                
+                print(f"[{current_combination}/{total_combinations}] 처리 중...", end=" ")
+                
+                # 데이터셋 생성
+                success, message = run_build_dataset_seq(input_file, n_steps, horizon, threshold, output_file)
+                
+                if success:
+                    print(f"    [OK]")
                 else:
-                    print(f"    [FAIL] 분석 실패: {error}")
-                    results.append({
-                        'n_steps': n_steps,
-                        'horizon': horizon, 
-                        'file_path': output_file,
-                        'success': False,
-                        'error': error
-                    })
-            else:
-                print(f"    [FAIL] 생성 실패: {message}")
-                results.append({
-                    'n_steps': n_steps,
-                    'horizon': horizon,
-                    'file_path': output_file,
-                    'success': False,
-                    'error': message
-                })
-            
-            print()
+                    print(f"    [FAIL]")
+
+def run_classic_batch(input_file, output_dir):
+    """CLASSIC 모드 배치 실행"""
+    # 입력 파일명에서 일수 추출
+    days = extract_days_from_filename(input_file)
     
-    # 결과 요약
-    results_df = pd.DataFrame(results)
-    successful_results = results_df[results_df['success'] == True]
+    total_combinations = len(HORIZON_CANDIDATES) * len(TIMEFRAMES_CANDIDATES) * len(THRESHOLD_CANDIDATES)
+    print(f"CLASSIC 모드: {total_combinations}개 조합 처리 시작")
     
-    total_time = time.time() - total_start_time
+    current_combination = 0
     
-    print("=" * 70)
-    print("일괄 생성 결과 요약")
-    print("=" * 70)
-    print(f"총 시도: {len(results)}개")
-    print(f"성공: {len(successful_results)}개")
-    print(f"실패: {len(results) - len(successful_results)}개")
-    print(f"총 소요 시간: {total_time/60:.1f}분")
+    for horizon in HORIZON_CANDIDATES:
+        for timeframes in TIMEFRAMES_CANDIDATES:
+            for threshold in THRESHOLD_CANDIDATES:
+                current_combination += 1
+                
+                # 출력 파일명 (one_click_pipeline.py 규칙)
+                threshold_str = f"{threshold:.3f}".rstrip("0").rstrip(".")
+                # classic 모드는 mtf 사용
+                output_file = f"{output_dir}/dataset_mtf_{days}d_h{horizon}_{threshold_str}.parquet"
+                
+                tf_display = f"TF={timeframes if timeframes else '1m':6s}"
+                print(f"[{current_combination}/{total_combinations}] 처리 중...", end=" ")
+                
+                # 데이터셋 생성
+                success, message = run_build_dataset_classic(input_file, horizon, timeframes, threshold, output_file)
+                
+                if success:
+                    print(f"    [OK]")
+                else:
+                    print(f"    [FAIL]")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="배치 데이터셋 생성 도구")
+    parser.add_argument("--mode", type=str, required=True, choices=["seq", "classic"],
+                      help="데이터셋 모드: seq(시퀀스) 또는 classic(기술지표)")
+    parser.add_argument("--input", type=str, required=True,
+                      help="입력 파일 경로 (필수, 형식: krw_btc_1m_XXXd.parquet)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                      help="출력 디렉토리 (기본: data/seq 또는 data/classic)")
+    args = parser.parse_args()
+    
+    # 출력 디렉토리 자동 설정
+    if args.output_dir is None:
+        args.output_dir = f"data/{args.mode}"
+    
+    print(f"배치 데이터셋 생성 시작 - {args.mode.upper()} 모드")
+    print(f"실행 위치: {Path.cwd()}")
+    print(f"프로젝트 루트: {ROOT_DIR}")
+    print(f"입력 파일: {args.input}")
+    print(f"출력 디렉토리: {args.output_dir}")
     print()
     
-    if len(successful_results) > 0:
-        # 가장 균형잡힌 조합 찾기 (balance_score가 낮을수록 좋음)
-        best_balanced = successful_results.loc[successful_results['balance_score'].idxmin()]
-        
-        # 최소 클래스 비율이 가장 높은 조합 (모든 클래스가 충분히 존재)
-        best_min_class = successful_results.loc[successful_results['min_class_ratio'].idxmax()]
-        
-        print("TOP 추천 조합:")
-        print()
-        print(f"[1] 가장 균형잡힌 분포:")
-        print(f"   N_STEPS={best_balanced['n_steps']}, HORIZON={best_balanced['horizon']}")
-        print(f"   균형도: {best_balanced['balance_score']:.3f}")
-        print(f"   분포 - Flat: {best_balanced['flat_ratio']:.1%}, "
-              f"Long: {best_balanced['long_ratio']:.1%}, "
-              f"Short: {best_balanced['short_ratio']:.1%}")
-        print(f"   파일: {best_balanced['file_path']}")
-        print()
-        
-        print(f"[2] 최소 클래스 비율이 가장 높음:")
-        print(f"   N_STEPS={best_min_class['n_steps']}, HORIZON={best_min_class['horizon']}")
-        print(f"   최소 클래스: {best_min_class['min_class_ratio']:.1%}")
-        print(f"   분포 - Flat: {best_min_class['flat_ratio']:.1%}, "
-              f"Long: {best_min_class['long_ratio']:.1%}, "
-              f"Short: {best_min_class['short_ratio']:.1%}")
-        print(f"   파일: {best_min_class['file_path']}")
-        print()
-        
-        # 상위 5개 조합 표시
-        top5_balanced = successful_results.nsmallest(5, 'balance_score')
-        print("균형도 기준 TOP 5:")
-        print("순위  N_STEPS  HORIZON  균형도    Flat    Long   Short   최소클래스  데이터수")
-        print("-" * 80)
-        for i, (idx, row) in enumerate(top5_balanced.iterrows(), 1):
-            print(f"{i:2d}   {row['n_steps']:7d}  {row['horizon']:7d}  "
-                  f"{row['balance_score']:6.3f}  {row['flat_ratio']:6.1%}  "
-                  f"{row['long_ratio']:6.1%}  {row['short_ratio']:6.1%}  "
-                  f"{row['min_class_ratio']:8.1%}  {row['total_rows']:7,d}")
+    # 입력 파일 존재 확인
+    if not os.path.exists(args.input):
+        print(f"[ERROR] 입력 파일이 없습니다: {args.input}")
+        print("먼저 다음 명령으로 데이터를 수집하세요:")
+        print(f"python tools/collect.py --market KRW-BTC --minutes 1 --days 5 --out {args.input}")
+        return
     
-    # 결과를 CSV로 저장
-    results_csv = f"{BASE_OUTPUT_DIR}/batch_results.csv"
-    results_df.to_csv(results_csv, index=False, encoding='utf-8-sig')
-    print(f"\n상세 결과 저장: {results_csv}")
+    # 출력 디렉터리 생성
+    os.makedirs(args.output_dir, exist_ok=True)
     
-    print("\n일괄 데이터셋 생성 완료!")
-    print(f"생성된 파일 위치: {BASE_OUTPUT_DIR}/")
-    print("파일명 형식: dataset_seq_n{N_STEPS}_h{HORIZON}.parquet")
+    # 모드별 배치 실행
+    if args.mode == "seq":
+        run_seq_batch(args.input, args.output_dir)
+    else:  # classic
+        run_classic_batch(args.input, args.output_dir)
+    
+    print(f"\n배치 완료")
 
 if __name__ == "__main__":
     main()

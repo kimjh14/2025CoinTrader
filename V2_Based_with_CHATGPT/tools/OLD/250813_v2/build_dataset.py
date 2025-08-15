@@ -198,8 +198,7 @@ def build_seq_flat(
     use_ta:bool=False,
     horizon:int=1,
     up:float=0.0,
-    dn:float=0.0,
-    warmup_minutes:int=420
+    dn:float=0.0
 ) -> pd.DataFrame:
     """
     최근 n_steps개의 1분봉(OHLCV + 선택지표)을 한 행에 '펼쳐서' 담고,
@@ -243,13 +242,14 @@ def build_seq_flat(
     print(f"[seq] {len(feat_cols)}개 피처로 {n_steps}봉 윈도우 생성 중...")
     
     # 🔥 워밍업 적용: 420분 (7시간) 제거로 안정화된 지표값 보장
-    if len(df) <= warmup_minutes:
-        raise ValueError(f"데이터가 워밍업 기간({warmup_minutes}분)보다 짧습니다. 최소 {warmup_minutes + n_steps + horizon}분 필요")
+    WARMUP_MINUTES = 420
+    if len(df) <= WARMUP_MINUTES:
+        raise ValueError(f"데이터가 워밍업 기간({WARMUP_MINUTES}분)보다 짧습니다. 최소 {WARMUP_MINUTES + n_steps + horizon}분 필요")
     
-    print(f"[seq] 워밍업 {warmup_minutes}분 제거 (지표 안정화)")
+    print(f"[seq] 워밍업 {WARMUP_MINUTES}분 제거 (지표 안정화)")
     
     # 워밍업 적용된 윈도우 인덱스 계산
-    start_idx = warmup_minutes + n_steps - 1  # 워밍업 + 윈도우 시작점
+    start_idx = WARMUP_MINUTES + n_steps - 1  # 워밍업 + 윈도우 시작점
     end_idx = len(df) - horizon                # 라벨링 가능한 마지막 점
     
     if start_idx >= end_idx:
@@ -290,9 +290,9 @@ def build_seq_flat(
     print(f"[seq] 총 {total_windows}개 윈도우 생성 완료")
     out = pd.DataFrame(result_data)
     
-    # 라벨은 정수로 유지 (train.py 호환성)
-    # 정수 라벨: -1=short, 0=flat, 1=long
-    out["label"] = out["label"].astype(int)
+    # 라벨 정수 → 문자열 변환 (기존 호환성)
+    label_map = {-1: "short", 0: "flat", 1: "long"}
+    out["label"] = out["label"].map(label_map)
     
     # 워밍업/NA 제거
     out = out.dropna(axis=1, how="all")
@@ -309,43 +309,44 @@ def parse_tfs(s: str) -> List[int]:
         return []
     return [int(x.strip()) for x in s.split(",") if x.strip()]
 
-# 중복 함수 제거됨 (위쪽에 이미 정의됨)
+def resample_ohlcv(df_1m: pd.DataFrame, m: int) -> pd.DataFrame:
+    rule = f"{m}min"
+    agg = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+        "value": "sum",
+    }
+    r = df_1m.resample(rule, label="right", closed="right").agg(agg).dropna(subset=["close"])
+    return r
 
 # -----------------------
 # Classic builder (original)
 # -----------------------
-def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float, tfs: List[int], warmup_minutes:int=420):
+def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float, tfs: List[int]):
     df = pd.read_parquet(inp_path)
     if "timestamp" not in df.columns:
-        raise ValueError("Input parquet must contain 'timestamp' column.")
+        raise ValueError("Input parquet must contain 'timestamp' column (UTC).")
 
     df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
-    # timestamp는 이미 KST (컨텍스트 유지)
-    ts = pd.to_datetime(df["timestamp"])
-    if ts.dt.tz is None:
-        # tz-naive면 KST로 간주
-        ts = ts.dt.tz_localize("Asia/Seoul")
+    ts = pd.to_datetime(df["timestamp"], utc=True)
     base_1m = df.set_index(ts)[["open","high","low","close","volume","value"]].copy()
 
     feat_1m = add_features_1m(df.copy())
 
     if tfs:
         merged = feat_1m.copy()
-        # timestamp는 이미 KST
-        merged["timestamp"] = pd.to_datetime(merged["timestamp"])
-        if merged["timestamp"].dt.tz is None:
-            merged["timestamp"] = merged["timestamp"].dt.tz_localize("Asia/Seoul")
+        merged["timestamp"] = pd.to_datetime(merged["timestamp"], utc=True)
         left_df = merged[["timestamp"]].copy().sort_values("timestamp").reset_index(drop=True)
 
         for m in tfs:
             tf = resample_ohlcv(base_1m, m)
             tf_feat = add_features_ohlcv(tf, prefix=f"m{m}_")
             right_df = tf_feat.copy()
-            # KST 유지
-            right_df["ts"] = right_df.index
-            if right_df["ts"].dt.tz != merged["timestamp"].dt.tz:
-                right_df["ts"] = right_df["ts"].dt.tz_convert("Asia/Seoul")
+            right_df["ts"] = right_df.index.tz_convert("UTC")
             right_df = right_df.sort_index().reset_index(drop=True)
 
             aligned = pd.merge_asof(
@@ -362,11 +363,12 @@ def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float,
         merged = feat_1m
 
     # 🔥 워밍업 적용: 420분 (7시간) 제거로 안정화된 지표값 보장
-    if len(merged) <= warmup_minutes:
-        raise ValueError(f"데이터가 워밍업 기간({warmup_minutes}분)보다 짧습니다. 최소 {warmup_minutes + horizon}분 필요")
+    WARMUP_MINUTES = 420
+    if len(merged) <= WARMUP_MINUTES:
+        raise ValueError(f"데이터가 워밍업 기간({WARMUP_MINUTES}분)보다 짧습니다. 최소 {WARMUP_MINUTES + horizon}분 필요")
     
-    print(f"[classic] 워밍업 {warmup_minutes}분 제거 (지표 안정화)")
-    merged = merged.iloc[warmup_minutes:].copy()
+    print(f"[classic] 워밍업 {WARMUP_MINUTES}분 제거 (지표 안정화)")
+    merged = merged.iloc[WARMUP_MINUTES:].copy()
     merged = add_labels(merged, horizon=horizon, up=up, dn=dn)
 
     keep_core = ["ret_1","ema_12","ema_26","macd","rsi_14","bb_ma","atr_14","fwd_ret","label"]
@@ -387,12 +389,12 @@ def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float,
 # -----------------------
 # Sequence builder (new)
 # -----------------------
-def build_seq(inp_path: str, out_path: str, n_steps:int, ta:bool, horizon:int, up:float, dn:float, warmup_minutes:int=420):
+def build_seq(inp_path: str, out_path: str, n_steps:int, ta:bool, horizon:int, up:float, dn:float):
     df = pd.read_parquet(inp_path)
     if "timestamp" not in df.columns:
-        raise ValueError("Input parquet must contain 'timestamp' column.")
+        raise ValueError("Input parquet must contain 'timestamp' column (UTC).")
     df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-    out = build_seq_flat(df, n_steps=n_steps, use_ta=ta, horizon=horizon, up=up, dn=dn, warmup_minutes=warmup_minutes)
+    out = build_seq_flat(df, n_steps=n_steps, use_ta=ta, horizon=horizon, up=up, dn=dn)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     out.to_parquet(out_path, index=False)
@@ -423,20 +425,17 @@ def main():
     # seq params
     ap.add_argument("--n_steps", type=int, default=20, help="seq 전용: 최근 몇 봉을 펼칠지 (권장: 10~60)")
     ap.add_argument("--ta", action="store_true", help="seq 전용: OHLCV 외에 선택 지표(EMA/RSI/MACD/BB/ATR)도 포함")
-    
-    # 공통 파라미터
-    ap.add_argument("--warmup_minutes", type=int, default=420, help="지표 안정화를 위한 워밍업 기간(분) [기본값: 420]")
 
     args = ap.parse_args()
 
     if args.mode == "classic":
         tfs = parse_tfs(args.tfs)
         if tfs:
-            print(f"[build/classic] multi-TF: {tfs} warmup={args.warmup_minutes}")
-        build_classic(args.inp, args.out, args.horizon, args.up, args.dn, tfs, args.warmup_minutes)
+            print(f"[build/classic] multi-TF: {tfs}")
+        build_classic(args.inp, args.out, args.horizon, args.up, args.dn, tfs)
     else:
-        print(f"[build/seq] n_steps={args.n_steps} ta={args.ta} horizon={args.horizon} up={args.up} dn={args.dn} warmup={args.warmup_minutes}")
-        build_seq(args.inp, args.out, args.n_steps, args.ta, args.horizon, args.up, args.dn, args.warmup_minutes)
+        print(f"[build/seq] n_steps={args.n_steps} ta={args.ta} horizon={args.horizon} up={args.up} dn={args.dn}")
+        build_seq(args.inp, args.out, args.n_steps, args.ta, args.horizon, args.up, args.dn)
 
 if __name__ == "__main__":
     main()

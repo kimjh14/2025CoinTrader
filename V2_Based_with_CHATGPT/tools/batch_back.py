@@ -1,54 +1,148 @@
 """
-batch_back.py - 30개 조합 일괄 백테스트 도구
+batch_back.py - 일괄 백테스트 도구
 
 CLI 사용 예시:
+
+# SEQ 모드
 python tools/batch_back.py `
+  --mode seq `
   --data_dir data/seq `
   --model_dir artifacts/train `
   --output_dir artifacts/backtest `
   --fee 0.0005
 
+# CLASSIC 모드
+python tools/batch_back.py `
+  --mode classic `
+  --data_dir data/classic `
+  --model_dir artifacts/train `
+  --output_dir artifacts/backtest `
+  --fee 0.0005
+
 사용법:
-• batch_train.py로 학습된 30개 모델을 모두 백테스트합니다
-• N_STEPS: [5, 10, 15, 20, 30, 60] x HORIZON: [1, 3, 5, 10, 15]
+• batch_train.py로 학습된 모델을 모두 백테스트합니다
+• 파일명 패턴을 자동으로 감지하여 처리
 • 각 조합마다 성과 리포트와 거래 로그 생성
 • 자동 마크다운 리포트 생성 포함
-• 실행 시간: 약 20-40분 소요
 
 출력:
-• 30개 JSON 리포트 (bt_seq_n{N}_h{H}.json)
-• 30개 CSV 거래 로그 (trades_seq_n{N}_h{H}.csv)
-• 30개 마크다운 리포트 (trades_seq_n{N}_h{H}.md)
-• 종합 성과 비교 표 (summary_results.csv)
+• JSON 리포트 (bt_{mode}_{params}.json)
+• CSV 거래 로그 (trades_{mode}_{params}.csv)
+• 마크다운 리포트 (trades_{mode}_{params}.md)
+• 종합 성과 비교 표 (summary_results_{mode}.csv)
 """
 
 import os
+import sys
 import subprocess
-import pandas as pd
-import time
-import json
+import glob
+import re
+import argparse
 from pathlib import Path
 
-# 그리드 서치 파라미터
-N_STEPS_CANDIDATES = [5, 10, 15, 20, 30, 60]
-HORIZON_CANDIDATES = [1, 3, 5, 10, 15]
+# 현재 스크립트의 절대 경로 기준으로 프로젝트 루트 찾기
+SCRIPT_DIR = Path(__file__).resolve().parent  # tools 폴더
+ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 
-# 고정 파라미터
-BASE_DATA_DIR = "data/seq"  # 데이터셋 위치
-BASE_MODEL_DIR = "artifacts/train"  # 학습된 모델 위치
-BASE_OUTPUT_DIR = "artifacts/backtest"  # backtest.py 출력 폴더
-FEE = 0.0005
+# ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
+# batch_data.py, batch_train.py와 동일한 값 사용 권장
 
-def run_backtest_model(n_steps, horizon, data_path, model_path, meta_path, scaler_path, 
-                      report_path, csv_path, md_path):
+# 백테스트할 조합 선택 (None = 모든 조합, 리스트 = 선택된 값만)
+DAYS_TO_BACKTEST = [181]  # 예: [181] 또는 None (모두)
+HORIZON_TO_BACKTEST = [1, 3, 5, 10, 15, 20]   # 예: [1, 3, 5, 10, 15, 20] 또는 None (모두)
+THRESHOLD_TO_BACKTEST = [0.001, 0.002, 0.003]  # 예: [0.001, 0.002, 0.003] 또는 None (모두)
+
+# SEQ 모드 전용
+N_STEPS_TO_BACKTEST = None  # 예: [20, 30] 또는 None (모두)
+
+# 기본 파라미터
+DEFAULT_FEE = 0.0005
+
+# ========================================================
+
+def extract_params_from_model_filename(filename, mode):
+    """모델 파일명에서 파라미터 추출"""
+    if mode == "seq":
+        # model_seq_181d_h1_n20_0.001.joblib (one_click_pipeline.py 형식)
+        match = re.search(r'model_seq_(\d+)d_h(\d+)_n(\d+)_([\d.]+)\.joblib', filename)
+        if match:
+            return {
+                'days': int(match.group(1)),
+                'horizon': int(match.group(2)),
+                'n_steps': int(match.group(3)),
+                'threshold': float(match.group(4)),
+                'threshold_str': match.group(4)
+            }
+    else:  # classic
+        # model_classic_181d_h1_0.001.joblib
+        match = re.search(r'model_classic_(\d+)d_h(\d+)_([\d.]+)\.joblib', filename)
+        if match:
+            return {
+                'days': int(match.group(1)),
+                'horizon': int(match.group(2)),
+                'threshold': float(match.group(3)),
+                'threshold_str': match.group(3)
+            }
+    return None
+
+def should_process_model(params, mode):
+    """파라미터 기반으로 모델 처리 여부 결정"""
+    # Days 필터
+    if DAYS_TO_BACKTEST is not None and params['days'] not in DAYS_TO_BACKTEST:
+        return False
+    
+    # Horizon 필터
+    if HORIZON_TO_BACKTEST is not None and params['horizon'] not in HORIZON_TO_BACKTEST:
+        return False
+    
+    # Threshold 필터
+    if THRESHOLD_TO_BACKTEST is not None:
+        # 부동소수점 비교를 위해 근사값 비교
+        threshold_match = any(abs(params['threshold'] - t) < 0.0001 for t in THRESHOLD_TO_BACKTEST)
+        if not threshold_match:
+            return False
+    
+    # SEQ 모드 전용 N_STEPS 필터
+    if mode == "seq" and N_STEPS_TO_BACKTEST is not None:
+        if params['n_steps'] not in N_STEPS_TO_BACKTEST:
+            return False
+    
+    return True
+
+def find_corresponding_files(model_file, params, mode, data_dir, model_dir):
+    """모델 파일에 대응하는 데이터셋, 메타, 스케일러 파일 찾기"""
+    base_dir = os.path.dirname(model_file)
+    base_name = os.path.basename(model_file).replace('model_', '').replace('.joblib', '')
+    
+    # 스케일러와 메타 파일
+    scaler_file = os.path.join(base_dir, f"scaler_{base_name}.joblib")
+    meta_file = os.path.join(base_dir, f"meta_{base_name}.json")
+    
+    # 데이터셋 파일 (one_click_pipeline.py 형식)
+    if mode == "seq":
+        data_filename = f"dataset_seq_{params['days']}d_h{params['horizon']}_n{params['n_steps']}_{params['threshold_str']}.parquet"
+    else:
+        data_filename = f"dataset_mtf_{params['days']}d_h{params['horizon']}_{params['threshold_str']}.parquet"
+    
+    data_file = os.path.join(data_dir, data_filename)
+    
+    return {
+        'data': data_file,
+        'model': model_file,
+        'scaler': scaler_file,
+        'meta': meta_file
+    }
+
+def run_backtest_model(data_path, model_path, meta_path, scaler_path, 
+                      report_path, csv_path, md_path, fee):
     """단일 모델 백테스트"""
     cmd = [
-        "python", "tools/backtest.py",
+        sys.executable, str(SCRIPT_DIR / "backtest.py"),
         "--data", data_path,
         "--model", model_path,
         "--meta", meta_path,
         "--scaler", scaler_path,
-        "--fee", str(FEE),
+        "--fee", str(fee),
         "--report", report_path,
         "--log_csv", csv_path,
         "--auto_md",
@@ -56,7 +150,7 @@ def run_backtest_model(n_steps, horizon, data_path, model_path, meta_path, scale
     ]
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5분 타임아웃
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=str(ROOT_DIR))  # 5분 타임아웃
         if result.returncode == 0:
             return True, result.stdout
         else:
@@ -66,197 +160,96 @@ def run_backtest_model(n_steps, horizon, data_path, model_path, meta_path, scale
     except Exception as e:
         return False, str(e)
 
-def analyze_backtest_performance(report_path):
-    """백테스트 성능 분석"""
-    try:
-        if not os.path.exists(report_path):
-            return None, "리포트 파일 없음"
-        
-        with open(report_path, 'r', encoding='utf-8') as f:
-            report = json.load(f)
-        
-        # 성능 지표 추출
-        stats = {
-            'final_equity': report.get('final_equity', 0),
-            'hold_final': report.get('hold_final', 0),
-            'n_trades': report.get('n_trades', 0),
-            'n_obs': report.get('n_obs', 0),
-            'start': report.get('start', ''),
-            'end': report.get('end', ''),
-            'outperformance': report.get('final_equity', 0) - report.get('hold_final', 0)
-        }
-        
-        # 임계값 정보
-        if 'thresholds' in report:
-            th = report['thresholds']
-            stats['long_p'] = th.get('long_p', 0)
-            stats['short_p'] = th.get('short_p', 0)
-            stats['allow_short'] = th.get('allow_short', False)
-        
-        return stats, "성공"
-    except Exception as e:
-        return None, str(e)
 
 def main():
-    print(f"일괄 백테스트 시작: {len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES)}개 조합")
+    parser = argparse.ArgumentParser(description="일괄 백테스트 도구")
+    parser.add_argument("--mode", type=str, required=True, choices=["seq", "classic"],
+                      help="백테스트 모드: seq 또는 classic")
+    parser.add_argument("--data_dir", type=str, required=True,
+                      help="데이터셋 디렉토리")
+    parser.add_argument("--model_dir", type=str, default="artifacts/train",
+                      help="모델 디렉토리")
+    parser.add_argument("--output_dir", type=str, default="artifacts/backtest",
+                      help="출력 디렉토리")
+    parser.add_argument("--fee", type=float, default=DEFAULT_FEE,
+                      help="거래 수수료")
+    
+    args = parser.parse_args()
+    
     
     # 출력 디렉터리 생성
-    os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
     
-    results = []
-    total_combinations = len(N_STEPS_CANDIDATES) * len(HORIZON_CANDIDATES)
-    current_combination = 0
-    total_start_time = time.time()
+    # 모델 파일 검색
+    if args.mode == "seq":
+        pattern = os.path.join(args.model_dir, "model_seq_*.joblib")
+    else:
+        pattern = os.path.join(args.model_dir, "model_classic_*.joblib")
     
-    for n_steps in N_STEPS_CANDIDATES:
-        for horizon in HORIZON_CANDIDATES:
-            current_combination += 1
-            
-            # 파일명 규칙 (backtest.py CLI 스타일)
-            data_file = f"{BASE_DATA_DIR}/dataset_seq_n{n_steps}_h{horizon}.parquet"
-            model_file = f"{BASE_MODEL_DIR}/model_seq_n{n_steps}_h{horizon}.joblib"
-            meta_file = f"{BASE_MODEL_DIR}/meta_seq_n{n_steps}_h{horizon}.json"
-            scaler_file = f"{BASE_MODEL_DIR}/scaler_seq_n{n_steps}_h{horizon}.joblib"
-            
-            report_file = f"{BASE_OUTPUT_DIR}/bt_seq_n{n_steps}_h{horizon}.json"
-            csv_file = f"{BASE_OUTPUT_DIR}/trades_seq_n{n_steps}_h{horizon}.csv"
-            md_file = f"{BASE_OUTPUT_DIR}/trades_seq_n{n_steps}_h{horizon}.md"
-            
-            print(f"[{current_combination:2d}/{total_combinations}] n{n_steps}_h{horizon}")
-            
-            # 필수 파일 존재 확인
-            missing_files = []
-            required_files = {
-                '데이터': data_file,
-                '모델': model_file, 
-                '메타': meta_file,
-                '스케일러': scaler_file
-            }
-            
-            for name, path in required_files.items():
-                if not os.path.exists(path):
-                    missing_files.append(name)
-            
-            if missing_files:
-                print(f"    SKIP: {','.join(missing_files)} 없음")
-                results.append({
-                    'n_steps': n_steps,
-                    'horizon': horizon,
-                    'success': False,
-                    'error': f"파일 없음: {', '.join(missing_files)}",
-                    'report_path': report_file
-                })
-                continue
-            
-            start_time = time.time()
-            
-            # 백테스트 실행
-            success, message = run_backtest_model(
-                n_steps, horizon, data_file, model_file, meta_file, scaler_file,
-                report_file, csv_file, md_file
-            )
-            
-            if success:
-                # 성능 분석
-                stats, error = analyze_backtest_performance(report_file)
-                
-                if stats:
-                    elapsed = time.time() - start_time
-                    print(f"    OK ({elapsed:.1f}s) 배수={stats['final_equity']:.4f} 거래={stats['n_trades']}")
-                    
-                    results.append({
-                        'n_steps': n_steps,
-                        'horizon': horizon,
-                        'success': True,
-                        'report_path': report_file,
-                        **stats
-                    })
-                else:
-                    print(f"    WARN: 분석실패")
-                    results.append({
-                        'n_steps': n_steps,
-                        'horizon': horizon,
-                        'success': True,
-                        'report_path': report_file,
-                        'error': f"분석 실패: {error}"
-                    })
-            else:
-                print(f"    FAIL")
-                results.append({
-                    'n_steps': n_steps,
-                    'horizon': horizon,
-                    'success': False,
-                    'error': message,
-                    'report_path': report_file
-                })
+    all_model_files = glob.glob(pattern)
+    # 필터링
+    model_files = []
+    for file in all_model_files:
+        filename = os.path.basename(file)
+        params = extract_params_from_model_filename(filename, args.mode)
+        if params and should_process_model(params, args.mode):
+            model_files.append(file)
     
-    # 결과 요약
-    results_df = pd.DataFrame(results)
-    successful_results = results_df[results_df['success'] == True]
+    print(f"{args.mode.upper()} 모드: {len(model_files)}개 모델 백테스트 시작")
     
-    total_time = time.time() - total_start_time
+    if not model_files:
+        print("[ERROR] 모델 파일이 없습니다.")
+        print(f"검색 패턴: {pattern}")
+        return
     
-    print("=" * 70)
-    print("일괄 백테스트 결과 요약")
-    print("=" * 70)
-    print(f"총 시도: {len(results)}개")
-    print(f"성공: {len(successful_results)}개")
-    print(f"실패: {len(results) - len(successful_results)}개")
-    print(f"총 소요 시간: {total_time/60:.1f}분")
-    print()
     
-    if len(successful_results) > 0:
-        # 성능 기준 분석
-        performance_cols = ['final_equity', 'outperformance', 'n_trades']
-        available_cols = [col for col in performance_cols if col in successful_results.columns]
+    for idx, model_file in enumerate(sorted(model_files), 1):
+        filename = os.path.basename(model_file)
+        params = extract_params_from_model_filename(filename, args.mode)
         
-        if 'final_equity' in successful_results.columns:
-            # 가장 높은 최종 수익률
-            best_equity = successful_results.loc[successful_results['final_equity'].idxmax()]
-            
-            # 가장 높은 아웃퍼폼
-            if 'outperformance' in successful_results.columns:
-                best_outperf = successful_results.loc[successful_results['outperformance'].idxmax()]
-            else:
-                best_outperf = best_equity
-            
-            print("TOP 추천 조합:")
-            print()
-            print(f"[1] 최고 수익률:")
-            print(f"   N_STEPS={best_equity['n_steps']}, HORIZON={best_equity['horizon']}")
-            print(f"   최종 배수: {best_equity['final_equity']:.4f}")
-            print(f"   vs 홀딩: {best_equity.get('hold_final', 0):.4f}")
-            print(f"   거래 수: {best_equity.get('n_trades', 0)}")
-            print(f"   리포트: {best_equity['report_path']}")
-            print()
-            
-            if best_outperf['n_steps'] != best_equity['n_steps'] or best_outperf['horizon'] != best_equity['horizon']:
-                print(f"[2] 최고 아웃퍼폼:")
-                print(f"   N_STEPS={best_outperf['n_steps']}, HORIZON={best_outperf['horizon']}")
-                print(f"   아웃퍼폼: {best_outperf.get('outperformance', 0):+.4f}")
-                print(f"   최종 배수: {best_outperf['final_equity']:.4f}")
-                print(f"   거래 수: {best_outperf.get('n_trades', 0)}")
-                print()
-            
-            # 상위 5개 조합 표시
-            top5_equity = successful_results.nlargest(5, 'final_equity')
-            print("최종 수익률 기준 TOP 5:")
-            print("순위  N_STEPS  HORIZON  최종배수  vs홀딩   아웃퍼폼   거래수")
-            print("-" * 65)
-            for i, (idx, row) in enumerate(top5_equity.iterrows(), 1):
-                outperf = row.get('outperformance', 0)
-                print(f"{i:2d}   {row['n_steps']:7d}  {row['horizon']:7d}  "
-                      f"{row['final_equity']:7.4f}  {row.get('hold_final', 0):6.4f}  "
-                      f"{outperf:+7.4f}  {row.get('n_trades', 0):6d}")
+        if not params:
+            print(f"[{idx}/{len(model_files)}] {filename} - 파일명 파싱 실패")
+            continue
+        
+        # 대응 파일들 찾기
+        files = find_corresponding_files(model_file, params, args.mode, args.data_dir, args.model_dir)
+        
+        # 필수 파일 존재 확인
+        missing_files = []
+        for name, path in files.items():
+            if not os.path.exists(path):
+                missing_files.append(name)
+        
+        if missing_files:
+            print(f"[{idx:3d}/{len(model_files)}] 처리 중... [SKIP - 파일 누락]")
+            continue
+        
+        # 출력 파일명 생성 (one_click_pipeline.py 형식)
+        if args.mode == "seq":
+            base_name = f"seq_{params['days']}d_h{params['horizon']}_n{params['n_steps']}_{params['threshold_str']}"
+            display_name = f"d{params['days']}_h{params['horizon']}_n{params['n_steps']}_t{params['threshold_str']}"
+        else:
+            base_name = f"classic_{params['days']}d_h{params['horizon']}_{params['threshold_str']}"
+            display_name = f"d{params['days']}_h{params['horizon']}_t{params['threshold_str']}"
+        
+        report_file = os.path.join(args.output_dir, f"bt_{base_name}.json")
+        csv_file = os.path.join(args.output_dir, f"trades_{base_name}.csv")
+        md_file = os.path.join(args.output_dir, f"trades_{base_name}.md")
+        
+        print(f"[{idx:3d}/{len(model_files)}] 처리 중...", end=" ")
+        
+        # 백테스트 실행
+        success, message = run_backtest_model(
+            files['data'], files['model'], files['meta'], files['scaler'],
+            report_file, csv_file, md_file, args.fee
+        )
+        
+        if success:
+            print(f"[OK]")
+        else:
+            print(f"[FAIL]")
     
-    # 결과를 CSV로 저장
-    results_csv = f"{BASE_OUTPUT_DIR}/batch_backtest_results.csv"
-    results_df.to_csv(results_csv, index=False, encoding='utf-8-sig')
-    print(f"\\n상세 결과 저장: {results_csv}")
-    
-    print("\\n일괄 백테스트 완료!")
-    print(f"백테스트 결과 위치: {BASE_OUTPUT_DIR}/")
-    print("파일명 형식: bt_seq_n{N_STEPS}_h{HORIZON}.json")
+    print(f"\n배치 완료")
 
 if __name__ == "__main__":
     main()

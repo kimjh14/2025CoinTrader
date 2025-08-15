@@ -5,7 +5,14 @@
       "Bash(python:*)",
       "Bash(del toolsbuild_dataset_optimized.py)",
       "Bash(rm:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(for file in *_short.*)",
+      "Bash(do if [ -f \"$file\" ])",
+      "Bash(then newname=\"$file/_short/\")",
+      "Bash(echo \"Renamed: $file -> $newname\")",
+      "Bash(fi)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
