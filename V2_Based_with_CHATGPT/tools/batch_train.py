@@ -45,16 +45,24 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent  # tools 폴더
 ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 
-# ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
-# batch_data.py와 동일한 값 사용 권장
+# batch_data.py에서 설정 임포트
+sys.path.insert(0, str(SCRIPT_DIR))
+from batch_data import (
+    DAYS_TO_PROCESS,
+    HORIZON_CANDIDATES,
+    THRESHOLD_CANDIDATES,
+    N_STEPS_CANDIDATES
+)
 
-# 학습할 조합 선택 (None = 모든 조합, 리스트 = 선택된 값만)
-DAYS_TO_TRAIN = [181]  # 예: [181] 또는 None (모두)
-HORIZON_TO_TRAIN = [1, 3, 5, 10, 15, 20]   # 예: [1, 3, 5, 10, 15, 20] 또는 None (모두)
-THRESHOLD_TO_TRAIN = [0.001, 0.002, 0.003]  # 예: [0.001, 0.002, 0.003] 또는 None (모두)
+# ========== 배치 파라미터 설정 (batch_data.py의 값 사용) ==========
+
+# 학습할 조합 선택 (batch_data.py의 설정 따름)
+DAYS_TO_TRAIN = DAYS_TO_PROCESS  # batch_data.py의 DAYS_TO_PROCESS 사용
+HORIZON_TO_TRAIN = HORIZON_CANDIDATES  # batch_data.py의 HORIZON_CANDIDATES 사용
+THRESHOLD_TO_TRAIN = THRESHOLD_CANDIDATES  # batch_data.py의 THRESHOLD_CANDIDATES 사용
 
 # SEQ 모드 전용
-N_STEPS_TO_TRAIN = None  # 예: [20, 30] 또는 None (모두)
+N_STEPS_TO_TRAIN = N_STEPS_CANDIDATES  # batch_data.py의 N_STEPS_CANDIDATES 사용
 
 # 기본 파라미터
 DEFAULT_SPLITS = 4
@@ -152,6 +160,8 @@ def main():
                       help="거래 수수료")
     parser.add_argument("--allow_short", action="store_true",
                       help="숏 포지션 허용")
+    parser.add_argument("--force", action="store_true",
+                      help="기존 모델이 있어도 재학습")
     
     args = parser.parse_args()
     
@@ -201,7 +211,12 @@ def main():
         scaler_file = os.path.join(args.output_dir, f"scaler_{base_name}.joblib")
         meta_file = os.path.join(args.output_dir, f"meta_{base_name}.json")
         
-        print(f"[{idx:3d}/{len(dataset_files)}] 처리 중...", end=" ")
+        # 이미 모델이 존재하면 건너뛰기 (--force 옵션이 없을 때만)
+        if not args.force and os.path.exists(model_file) and os.path.exists(meta_file):
+            print(f"[{idx:3d}/{len(dataset_files)}] {display_name} 처리 중... [SKIP] (이미 존재)")
+            continue
+        
+        print(f"[{idx:3d}/{len(dataset_files)}] {display_name} 처리 중...", end=" ")
         
         # 모델 학습
         success, message = run_train_model(data_file, model_file, scaler_file, meta_file, args.splits, args.fee, args.allow_short)

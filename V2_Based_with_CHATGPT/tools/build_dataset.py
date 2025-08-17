@@ -24,10 +24,21 @@ python tools/build_dataset.py `
   --dn -0.0005 `
   --ta
 
+# CSV 파일도 함께 저장 (디버깅/분석용)
+python tools/build_dataset.py `
+  --mode classic `
+  --in data/raw/krw_btc_1m_180d.parquet `
+  --out data/classic/dataset.parquet `
+  --horizon 20 `
+  --up 0.001 `
+  --dn -0.001 `
+  --save_csv
+
 사용법:
 • collect.py로 수집한 1분봉 데이터를 ML 훈련용 데이터셋으로 변환합니다
 • Classic: 기술적 지표 기반 예측 (현재 지표 → horizon 분 후 예측)
 • Sequence: 패턴 기반 예측 (최근 N봉 패턴 → horizon 분 후 예측)
+• --save_csv: CSV 파일도 함께 저장 (엑셀/디버깅 목적)
 
 매개변수 가이드:
 • --horizon: 예측 시점 (1=다음봉, 3=3분 후, 5=5분 후) ※ 권장: 1-5분
@@ -70,16 +81,22 @@ def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False, min_periods=1).mean()
 
 def rsi(series: pd.Series, period: int=14) -> pd.Series:
+    """Wilder's RSI - 업비트/TradingView 표준"""
     if HAVE_ML:
         return _rsi(series, period)
+    
     delta = series.diff()
-    up = np.where(delta > 0, delta, 0.0)
-    down = np.where(delta < 0, -delta, 0.0)
-    roll_up = pd.Series(up, index=series.index).ewm(alpha=1/period, adjust=False, min_periods=1).mean()
-    roll_down = pd.Series(down, index=series.index).ewm(alpha=1/period, adjust=False, min_periods=1).mean()
-    rs = roll_up / (roll_down.replace(0, np.nan))
-    out = 100 - (100 / (1 + rs))
-    return out.fillna(50.0)
+    gains = delta.where(delta > 0, 0)
+    losses = -delta.where(delta < 0, 0)
+    
+    # Wilder's Smoothing (RMA)
+    # alpha = 1/period for Wilder's method
+    avg_gains = gains.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    avg_losses = losses.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    
+    rs = avg_gains / avg_losses
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0)
 
 def macd(series: pd.Series, fast:int=12, slow:int=26, signal:int=9):
     if HAVE_ML:
@@ -93,19 +110,22 @@ def macd(series: pd.Series, fast:int=12, slow:int=26, signal:int=9):
 
 def bollinger(series: pd.Series, period:int=20, stds:float=2.0):
     ma = series.rolling(window=period, min_periods=1).mean()
-    sd = series.rolling(window=period, min_periods=1).std(ddof=0)
+    sd = series.rolling(window=period, min_periods=1).std(ddof=1)
     upper = ma + stds*sd
     lower = ma - stds*sd
     width = (upper - lower) / ma.replace(0, np.nan)
     return ma, upper, lower, width
 
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, period:int=14):
+    """Wilder's ATR"""
     prev_close = close.shift(1)
     tr1 = (high - low).abs()
     tr2 = (high - prev_close).abs()
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=period, min_periods=1).mean()
+    
+    # Wilder's smoothing
+    return tr.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
 
 # -----------------------
 # Feature builders (original, classic mode)
@@ -115,8 +135,8 @@ def add_features_ohlcv(df: pd.DataFrame, prefix: str="") -> pd.DataFrame:
     out[f"{prefix}ret_1"]  = out["close"].pct_change()
     out[f"{prefix}ret_5"]  = out["close"].pct_change(5)
     out[f"{prefix}ret_15"] = out["close"].pct_change(15)
-    out[f"{prefix}vol_20"] = out[f"{prefix}ret_1"].rolling(20, min_periods=5).std(ddof=0)
-    out[f"{prefix}vol_60"] = out[f"{prefix}ret_1"].rolling(60, min_periods=10).std(ddof=0)
+    out[f"{prefix}vol_20"] = out[f"{prefix}ret_1"].rolling(20, min_periods=5).std(ddof=1)
+    out[f"{prefix}vol_60"] = out[f"{prefix}ret_1"].rolling(60, min_periods=10).std(ddof=1)
 
     out[f"{prefix}ema_12"] = ema(out["close"], 12)
     out[f"{prefix}ema_26"] = ema(out["close"], 26)
@@ -151,8 +171,8 @@ def add_features_1m(df: pd.DataFrame) -> pd.DataFrame:
     df["logret_1"]  = np.log(df["close"]).diff()
     df["ret_5"]     = df["close"].pct_change(5)
     df["ret_15"]    = df["close"].pct_change(15)
-    df["vol_20"]    = df["ret_1"].rolling(20, min_periods=5).std(ddof=0)
-    df["vol_60"]    = df["ret_1"].rolling(60, min_periods=10).std(ddof=0)
+    df["vol_20"]    = df["ret_1"].rolling(20, min_periods=5).std(ddof=1)
+    df["vol_60"]    = df["ret_1"].rolling(60, min_periods=10).std(ddof=1)
 
     df["ema_12"]    = ema(df["close"], 12)
     df["ema_26"]    = ema(df["close"], 26)
@@ -314,7 +334,7 @@ def parse_tfs(s: str) -> List[int]:
 # -----------------------
 # Classic builder (original)
 # -----------------------
-def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float, tfs: List[int], warmup_minutes:int=420):
+def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float, tfs: List[int], warmup_minutes:int=420, save_csv:bool=False):
     df = pd.read_parquet(inp_path)
     if "timestamp" not in df.columns:
         raise ValueError("Input parquet must contain 'timestamp' column.")
@@ -377,6 +397,13 @@ def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float,
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     merged.to_parquet(out_path, index=False)
     print("dataset rows:", len(merged))
+    
+    # CSV 저장 옵션이 활성화된 경우에만 CSV 저장
+    if save_csv:
+        csv_path = out_path.replace('.parquet', '.csv')
+        merged.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"[CSV 저장] {csv_path}")
+    
     if len(merged):
         prop = (merged["label"].value_counts(normalize=True).sort_index()
                 .rename({-1:"short",0:"flat",1:"long"}))
@@ -387,7 +414,7 @@ def build_classic(inp_path: str, out_path: str, horizon:int, up:float, dn:float,
 # -----------------------
 # Sequence builder (new)
 # -----------------------
-def build_seq(inp_path: str, out_path: str, n_steps:int, ta:bool, horizon:int, up:float, dn:float, warmup_minutes:int=420):
+def build_seq(inp_path: str, out_path: str, n_steps:int, ta:bool, horizon:int, up:float, dn:float, warmup_minutes:int=420, save_csv:bool=False):
     df = pd.read_parquet(inp_path)
     if "timestamp" not in df.columns:
         raise ValueError("Input parquet must contain 'timestamp' column.")
@@ -397,6 +424,13 @@ def build_seq(inp_path: str, out_path: str, n_steps:int, ta:bool, horizon:int, u
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     out.to_parquet(out_path, index=False)
     print("dataset rows:", len(out))
+    
+    # CSV 저장 옵션이 활성화된 경우에만 CSV 저장
+    if save_csv:
+        csv_path = out_path.replace('.parquet', '.csv')
+        out.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"[CSV 저장] {csv_path}")
+    
     if len(out):
         prop = (out["label"].value_counts(normalize=True).sort_index()
                 .rename({-1:"short",0:"flat",1:"long"}))
@@ -426,17 +460,18 @@ def main():
     
     # 공통 파라미터
     ap.add_argument("--warmup_minutes", type=int, default=420, help="지표 안정화를 위한 워밍업 기간(분) [기본값: 420]")
+    ap.add_argument("--save_csv", action="store_true", help="결과를 CSV 파일로도 저장 (디버깅/분석용)")
 
     args = ap.parse_args()
 
     if args.mode == "classic":
         tfs = parse_tfs(args.tfs)
         if tfs:
-            print(f"[build/classic] multi-TF: {tfs} warmup={args.warmup_minutes}")
-        build_classic(args.inp, args.out, args.horizon, args.up, args.dn, tfs, args.warmup_minutes)
+            print(f"[build/classic] multi-TF: {tfs} warmup={args.warmup_minutes} save_csv={args.save_csv}")
+        build_classic(args.inp, args.out, args.horizon, args.up, args.dn, tfs, args.warmup_minutes, args.save_csv)
     else:
-        print(f"[build/seq] n_steps={args.n_steps} ta={args.ta} horizon={args.horizon} up={args.up} dn={args.dn} warmup={args.warmup_minutes}")
-        build_seq(args.inp, args.out, args.n_steps, args.ta, args.horizon, args.up, args.dn, args.warmup_minutes)
+        print(f"[build/seq] n_steps={args.n_steps} ta={args.ta} horizon={args.horizon} up={args.up} dn={args.dn} warmup={args.warmup_minutes} save_csv={args.save_csv}")
+        build_seq(args.inp, args.out, args.n_steps, args.ta, args.horizon, args.up, args.dn, args.warmup_minutes, args.save_csv)
 
 if __name__ == "__main__":
     main()

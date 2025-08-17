@@ -12,9 +12,13 @@
       "Bash(then newname=\"$file/_short/\")",
       "Bash(echo \"Renamed: $file -> $newname\")",
       "Bash(fi)",
-      "Bash(done)"
+      "Bash(done)",
+      "WebFetch(domain:docs.upbit.com)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "D:\\mnt\\d\\python\\2025CoinTrader"
+    ]
   }
 }

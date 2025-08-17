@@ -5,17 +5,17 @@ tools/backtest_period.py - 기간 제한 백테스트
 
 CLI 사용 예시:
 python tools/backtest_period.py `
-  --data data/classic/dataset_mtf_181d_h20_0.003.parquet `
-  --model artifacts/train/model_classic_181d_h20_0.003.joblib `
-  --meta artifacts/train/meta_classic_181d_h20_0.003.json `
-  --scaler artifacts/train/scaler_classic_181d_h20_0.003.joblib `
+  --data data/classic/dataset_mtf_200d_h3_0.002.parquet `
+  --model artifacts/train/model_classic_200d_h3_0.002.joblib `
+  --meta artifacts/train/meta_classic_200d_h3_0.002.json `
+  --scaler artifacts/train/scaler_classic_200d_h3_0.002.joblib `
   --start 2025-07-03 `
-  --end 2025-08-13 `
+  --end 2025-08-17 `
   --fee 0.0005 `
-  --report artifacts/backtest/bt_period_20250703_20250813.json `
-  --log_csv artifacts/backtest/trades_period_20250703_20250813.csv `
+  --report artifacts/backtest/bt_period_20250703_20250817.json `
+  --log_csv artifacts/backtest/trades_period_20250703_20250817.csv `
   --auto_md `
-  --md_out artifacts/backtest/trades_period_20250703_20250813.md
+  --md_out artifacts/backtest/trades_period_20250703_20250817.md
 """
 
 import argparse
@@ -337,7 +337,7 @@ def run_backtest(args):
             return
     
     # meta (backtest.py와 동일)
-    with open(args.meta, "r") as f:
+    with open(args.meta, "r", encoding="utf-8") as f:
         meta = json.load(f)
     features = meta.get("features", [])
     allow_short = bool(meta.get("allow_short", False))

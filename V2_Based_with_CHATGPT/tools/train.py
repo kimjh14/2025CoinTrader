@@ -15,10 +15,10 @@ python tools/train.py `
 
 # 롱/숏 모드 (고급, 위험 높음)
 python tools/train.py `
-  --data data/classic/dataset_mtf_180d_h20_0.001.parquet `
-  --model artifacts/train/model_classic_180d_h20_0.001.joblib `
-  --scaler artifacts/train/scaler_classic_180d_h20_0.001.joblib `
-  --meta artifacts/train/meta_classic_180d_h20_0.001.json `
+  --data data/classic/dataset_mtf_200d_h10_0.03.parquet `
+  --model artifacts/train/model_classic_200d_h10_0.03.joblib `
+  --scaler artifacts/train/scaler_classic_200d_h10_0.03.joblib `
+  --meta artifacts/train/meta_classic_200d_h10_0.03.json `
   --splits 4 `
   --fee 0.0005 `
   --allow_short
@@ -170,11 +170,11 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
             # 가격 데이터 준비 (다음 봉 시가 체결을 위해)
             va_prices = df.iloc[va_idx][["open", "close"]].reset_index(drop=True)
             
-            # 임계치 탐색 (롱/숏) - 공용 PnL 함수 사용 (최소 0.6)
-            longs = np.linspace(0.60, 0.80, 5)  # 0.60, 0.65, 0.70, 0.75, 0.80
-            shorts = np.linspace(0.60, 0.80, 5)  # 0.60, 0.65, 0.70, 0.75, 0.80
+            # 임계치 탐색 (롱/숏) - 공용 PnL 함수 사용 (최소 0.5)
+            longs = np.linspace(0.50, 0.75, 6)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75
+            shorts = np.linspace(0.50, 0.75, 6)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75
             best_eq_split = -1
-            best_lp, best_sp = 0.65, 0.65  # 기본값 0.65
+            best_lp, best_sp = 0.60, 0.60  # 기본값 0.60
             
             for lp in longs:
                 if allow_short:
@@ -233,10 +233,10 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
     proba_ho = cal.predict_proba(X_ho)
     ho_prices = df.iloc[split_idx:][["open", "close"]].reset_index(drop=True)
     
-    # 적응적 임계치 탐색 범위 (최소 0.6 이상)
-    longs = np.linspace(0.60, 0.85, 6)  # 0.60, 0.65, 0.70, 0.75, 0.80, 0.85
-    shorts = np.linspace(0.60, 0.85, 6)  # 0.60, 0.65, 0.70, 0.75, 0.80, 0.85
-    best_eq, best_lp, best_sp = -1, 0.65, 0.65  # 기본값도 0.65로
+    # 적응적 임계치 탐색 범위 (최소 0.5, 최대 0.8)
+    longs = np.linspace(0.50, 0.80, 7)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80
+    shorts = np.linspace(0.50, 0.80, 7)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80
+    best_eq, best_lp, best_sp = -1, 0.60, 0.60  # 기본값 0.60
 
     if allow_short:
         for lp in longs:
@@ -266,10 +266,10 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
             if eq > best_eq:
                 best_eq, best_lp = eq, lp
     
-    # 경계값에서 최적값 발견 시 범위 확장 재탐색
-    # 롱 임계치 확장
-    if best_lp >= 0.80:
-        extended_longs = np.linspace(0.80, 0.92, 5)  # 0.80, 0.83, 0.86, 0.89, 0.92
+    # 경계값에서 최적값 발견 시 범위 확장 재탐색 (최대 0.8로 제한)
+    # 롱 임계치 확장 - 이미 0.8이 최대이므로 확장 불필요
+    if False:  # best_lp >= 0.8일 때 확장하지 않음
+        extended_longs = np.linspace(0.75, 0.80, 3)  # 제한됨
         for lp in extended_longs:
             if allow_short:
                 for sp in shorts:
@@ -297,9 +297,9 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
                 if eq > best_eq:
                     best_eq, best_lp = eq, lp
     
-    # 숏 임계치 확장 (allow_short일 때만)
-    if allow_short and best_sp >= 0.80:
-        extended_shorts = np.linspace(0.80, 0.92, 5)  # 0.80, 0.83, 0.86, 0.89, 0.92
+    # 숏 임계치 확장 (allow_short일 때만) - 최대 0.8로 제한
+    if False:  # allow_short and best_sp >= 0.8일 때 확장하지 않음
+        extended_shorts = np.linspace(0.75, 0.80, 3)  # 제한됨
         for sp in extended_shorts:
             # 최적 롱 임계치는 고정하고 숏만 확장 탐색
             eq = quick_equity_from_proba(
@@ -361,7 +361,7 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
         "n_holdout": int(len(X_ho)),
         "allow_short": bool(allow_short),
         "optimized_long_p": float(best_lp),
-        "optimized_short_p": float(best_sp if allow_short else 0.6),
+        "optimized_short_p": float(best_sp if allow_short else 0.60),
         "fee_used": float(fee),
         "algo": "HistGradientBoostingClassifier + IsotonicCalibration",
         "params": best_model,

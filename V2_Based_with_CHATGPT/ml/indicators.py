@@ -5,10 +5,16 @@ def ema(s: pd.Series, span: int):
     return s.ewm(span=span, adjust=False).mean()
 
 def rsi(close: pd.Series, period: int=14):
+    """Wilder's RSI - 업비트/TradingView 표준"""
     delta = close.diff()
-    gain = (delta.where(delta>0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta<0, 0)).rolling(period).mean()
-    rs = gain / (loss + 1e-9)
+    gains = delta.where(delta > 0, 0)
+    losses = -delta.where(delta < 0, 0)
+    
+    # Wilder's Smoothing (RMA)
+    avg_gains = gains.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    avg_losses = losses.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    
+    rs = avg_gains / (avg_losses + 1e-9)
     return 100 - (100 / (1 + rs))
 
 def macd(close: pd.Series, fast=12, slow=26, signal=9):
@@ -29,12 +35,14 @@ def true_range(df: pd.DataFrame):
     return tr
 
 def atr(df: pd.DataFrame, period:int=14):
+    """Wilder's ATR"""
     tr = true_range(df)
-    return tr.rolling(period).mean()
+    # Wilder's smoothing
+    return tr.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
 
 def bollinger(close: pd.Series, period:int=20, nstd:float=2.0):
     ma = close.rolling(period).mean()
-    sd = close.rolling(period).std()
+    sd = close.rolling(period).std(ddof=1)  # 표본 표준편차 사용
     upper = ma + nstd*sd
     lower = ma - nstd*sd
     width = (upper - lower) / (ma + 1e-9)

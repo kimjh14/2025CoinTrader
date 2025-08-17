@@ -12,12 +12,8 @@ python tools/batch_back.py `
   --fee 0.0005
 
 # CLASSIC 모드
-python tools/batch_back.py `
-  --mode classic `
-  --data_dir data/classic `
-  --model_dir artifacts/train `
-  --output_dir artifacts/backtest `
-  --fee 0.0005
+
+
 
 사용법:
 • batch_train.py로 학습된 모델을 모두 백테스트합니다
@@ -44,16 +40,24 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent  # tools 폴더
 ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 
-# ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
-# batch_data.py, batch_train.py와 동일한 값 사용 권장
+# batch_data.py에서 설정 임포트
+sys.path.insert(0, str(SCRIPT_DIR))
+from batch_data import (
+    DAYS_TO_PROCESS,
+    HORIZON_CANDIDATES,
+    THRESHOLD_CANDIDATES,
+    N_STEPS_CANDIDATES
+)
 
-# 백테스트할 조합 선택 (None = 모든 조합, 리스트 = 선택된 값만)
-DAYS_TO_BACKTEST = [181]  # 예: [181] 또는 None (모두)
-HORIZON_TO_BACKTEST = [1, 3, 5, 10, 15, 20]   # 예: [1, 3, 5, 10, 15, 20] 또는 None (모두)
-THRESHOLD_TO_BACKTEST = [0.001, 0.002, 0.003]  # 예: [0.001, 0.002, 0.003] 또는 None (모두)
+# ========== 배치 파라미터 설정 (batch_data.py의 값 사용) ==========
+
+# 백테스트할 조합 선택 (batch_data.py의 설정 따름)
+DAYS_TO_BACKTEST = DAYS_TO_PROCESS  # batch_data.py의 DAYS_TO_PROCESS 사용
+HORIZON_TO_BACKTEST = HORIZON_CANDIDATES  # batch_data.py의 HORIZON_CANDIDATES 사용
+THRESHOLD_TO_BACKTEST = THRESHOLD_CANDIDATES  # batch_data.py의 THRESHOLD_CANDIDATES 사용
 
 # SEQ 모드 전용
-N_STEPS_TO_BACKTEST = None  # 예: [20, 30] 또는 None (모두)
+N_STEPS_TO_BACKTEST = N_STEPS_CANDIDATES  # batch_data.py의 N_STEPS_CANDIDATES 사용
 
 # 기본 파라미터
 DEFAULT_FEE = 0.0005

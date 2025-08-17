@@ -8,15 +8,15 @@ tools/backtest.py (final)
 
 CLI 사용 예시:
 python tools/backtest.py `
-    --data data/classic/dataset_mtf_181d_h20_0.003.parquet `
-    --model artifacts/train/model_classic_181d_h20_0.003.joblib `
-    --meta artifacts/train/meta_classic_181d_h20_0.003.json `
-    --scaler artifacts/train/scaler_classic_181d_h20_0.003.joblib `
+    --data data/classic/dataset_mtf_200d_h10_0.001.parquet `
+    --model artifacts/train/model_classic_200d_h10_0.001.joblib `
+    --meta artifacts/train/meta_classic_200d_h10_0.001.json `
+    --scaler artifacts/train/scaler_classic_200d_h10_0.001.joblib `
     --fee 0.0005 `
-    --report artifacts/backtest/bt_classic_181d_h20_0.003.json `
-    --log_csv artifacts/backtest/trades_classic_181d_h20_0.003.csv `
+    --report artifacts/backtest/bt_classic_200d_h10_0.001.json `
+    --log_csv artifacts/backtest/trades_classic_200d_h10_0.001.csv `
     --auto_md `
-    --md_out artifacts/backtest/trades_classic_181d_h20_0.003.md
+    --md_out artifacts/backtest/trades_classic_200d_h10_0.001.md
 
 사용법:
 • train.py로 훈련된 모델의 백테스팅을 수행합니다
@@ -274,7 +274,7 @@ def run_backtest(args):
             return
     
     # meta
-    with open(args.meta, "r") as f:
+    with open(args.meta, "r", encoding="utf-8") as f:
         meta = json.load(f)
     features = meta.get("features", [])
     allow_short = bool(meta.get("allow_short", False))

@@ -7,8 +7,8 @@ CLI 사용 예시:
 python tools/collect.py `
   --market KRW-BTC `
   --minutes 1 `
-  --days 181 `
-  --out data/raw/krw_btc_1m_181d.parquet
+  --days 200 `
+  --out data/raw/krw_btc_1m_200d.parquet
 
 사용법:
 • 업비트 공개 API에서 암호화폐 OHLCV 데이터를 수집합니다
@@ -272,8 +272,15 @@ def main():
         print(f"[데이터 범위] {oldest_kst.strftime('%Y-%m-%d %H:%M:%S KST')} ~ {newest_kst.strftime('%Y-%m-%d %H:%M:%S KST')}")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    
+    # Parquet 저장
     df.to_parquet(args.out, index=False)
     print(f"[저장 완료] {args.out}")
+    
+    # CSV 저장 (동일한 경로에 .csv 확장자로)
+    csv_path = args.out.replace('.parquet', '.csv')
+    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+    print(f"[CSV 저장] {csv_path}")
 
 if __name__ == "__main__":
     main()
