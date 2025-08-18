@@ -12,6 +12,12 @@ python tools/batch_back.py `
   --fee 0.0005
 
 # CLASSIC 모드
+python tools/batch_back.py `
+  --mode classic `
+  --data_dir data/classic `
+  --model_dir artifacts/train `
+  --output_dir artifacts/backtest `
+  --fee 0.0005
 
 
 
@@ -240,7 +246,7 @@ def main():
         csv_file = os.path.join(args.output_dir, f"trades_{base_name}.csv")
         md_file = os.path.join(args.output_dir, f"trades_{base_name}.md")
         
-        print(f"[{idx:3d}/{len(model_files)}] 처리 중...", end=" ")
+        print(f"[{idx:3d}/{len(model_files)}] {display_name} 처리 중...", end=" ")
         
         # 백테스트 실행
         success, message = run_backtest_model(

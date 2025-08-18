@@ -11,9 +11,9 @@ live_paper_v2.py - 개선된 실시간 페이퍼 트레이딩 시스템
 CLI 사용 예시:
 python tools/live_paper_v2.py `
   --market KRW-BTC `
-  --model artifacts/train/model_classic_200d_h3_0.003.joblib `
-  --meta artifacts/train/meta_classic_200d_h3_0.003.json `
-  --scaler artifacts/train/scaler_classic_200d_h3_0.003.joblib `
+  --model artifacts/train/model_classic_10d_h2_0.001.joblib `
+  --meta artifacts/train/meta_classic_10d_h2_0.001.json `
+  --scaler artifacts/train/scaler_classic_10d_h2_0.001.joblib `
   --fee 0.0005 `
   --state artifacts/live/state_v2.json `
   --log_csv artifacts/live/trades_v2.csv `
@@ -445,6 +445,7 @@ def main():
             if "indicators" in prediction and prediction["indicators"]:
                 print("기술적 지표:")
                 ind = prediction["indicators"]
+                current_price = prediction['close']
                 
                 # 1분봉 기본 지표
                 print("  [1분봉 지표]")
@@ -457,27 +458,53 @@ def main():
                 if "macd_hist" in ind:
                     print(f"    MACD Hist:      {ind['macd_hist']:.2f}")
                 if "atr_14" in ind:
-                    print(f"    ATR(14):        {ind['atr_14']:.2f}")
+                    print(f"    ATR(14):        {ind['atr_14']:,.0f}원")
                 
                 # 볼린저 밴드
+                print(f"\n    [볼린저 밴드]")
+                if "bb_ma" in ind:
+                    print(f"    BB 중심선:      {ind['bb_ma']:,.0f}원")
+                if "bb_up" in ind:
+                    print(f"    BB 상단:        {ind['bb_up']:,.0f}원")
+                if "bb_dn" in ind:
+                    print(f"    BB 하단:        {ind['bb_dn']:,.0f}원")
                 if "bb_width" in ind:
-                    print(f"    BB Width:       {ind['bb_width']:.6f}")
+                    print(f"    BB Width:       {ind['bb_width']*100:.4f}%")
                 if "dist_bb_up" in ind:
-                    print(f"    거리(상단):      {ind['dist_bb_up']:.6f}")
+                    print(f"    거리(상단):     {ind['dist_bb_up']*100:.4f}%")
                 if "dist_bb_dn" in ind:
-                    print(f"    거리(하단):      {ind['dist_bb_dn']:.6f}")
+                    print(f"    거리(하단):     {ind['dist_bb_dn']*100:.4f}%")
+                
+                # 이동평균선
+                print(f"\n    [이동평균]")
+                if "ema_12" in ind:
+                    print(f"    EMA(12):        {ind['ema_12']:,.0f}원")
+                if "ema_26" in ind:
+                    print(f"    EMA(26):        {ind['ema_26']:,.0f}원")
+                if "sma_20" in ind:
+                    print(f"    SMA(20):        {ind['sma_20']:,.0f}원")
+                if "sma_50" in ind:
+                    print(f"    SMA(50):        {ind['sma_50']:,.0f}원")
                 
                 # 수익률 및 변동성
+                print(f"\n    [수익률/변동성]")
                 if "ret_1" in ind:
-                    print(f"    수익률(1분):     {ind['ret_1']:.6f}")
+                    print(f"    수익률(1분):     {ind['ret_1']*100:.4f}%")
                 if "ret_5" in ind:
-                    print(f"    수익률(5분):     {ind['ret_5']:.6f}")
+                    print(f"    수익률(5분):     {ind['ret_5']*100:.4f}%")
                 if "ret_15" in ind:
-                    print(f"    수익률(15분):    {ind['ret_15']:.6f}")
+                    print(f"    수익률(15분):    {ind['ret_15']*100:.4f}%")
                 if "vol_20" in ind:
-                    print(f"    변동성(20):      {ind['vol_20']:.6f}")
+                    print(f"    변동성(20):      {ind['vol_20']*100:.4f}%")
                 if "vol_60" in ind:
-                    print(f"    변동성(60):      {ind['vol_60']:.6f}")
+                    print(f"    변동성(60):      {ind['vol_60']*100:.4f}%")
+                
+                # 거래량
+                if "volume" in ind:
+                    print(f"\n    [거래량]")
+                    print(f"    거래량:         {ind['volume']:.4f} BTC")
+                    if "vol_sma_20" in ind:
+                        print(f"    거래량 SMA(20): {ind['vol_sma_20']:.4f} BTC")
                 
                 # 3분봉 지표
                 print("\n  [3분봉 지표]")
@@ -488,9 +515,15 @@ def main():
                 if "m3_macd_hist" in ind:
                     print(f"    MACD Hist:      {ind['m3_macd_hist']:.2f}")
                 if "m3_atr_14" in ind:
-                    print(f"    ATR(14):        {ind['m3_atr_14']:.2f}")
+                    print(f"    ATR(14):        {ind['m3_atr_14']:,.0f}원")
+                if "m3_bb_ma" in ind:
+                    print(f"    BB 중심선:      {ind['m3_bb_ma']:,.0f}원")
+                if "m3_bb_up" in ind:
+                    print(f"    BB 상단:        {ind['m3_bb_up']:,.0f}원")
+                if "m3_bb_dn" in ind:
+                    print(f"    BB 하단:        {ind['m3_bb_dn']:,.0f}원")
                 if "m3_bb_width" in ind:
-                    print(f"    BB Width:       {ind['m3_bb_width']:.6f}")
+                    print(f"    BB Width:       {ind['m3_bb_width']*100:.4f}%")
                 
                 # 5분봉 지표
                 print("\n  [5분봉 지표]")
@@ -501,9 +534,15 @@ def main():
                 if "m5_macd_hist" in ind:
                     print(f"    MACD Hist:      {ind['m5_macd_hist']:.2f}")
                 if "m5_atr_14" in ind:
-                    print(f"    ATR(14):        {ind['m5_atr_14']:.2f}")
+                    print(f"    ATR(14):        {ind['m5_atr_14']:,.0f}원")
+                if "m5_bb_ma" in ind:
+                    print(f"    BB 중심선:      {ind['m5_bb_ma']:,.0f}원")
+                if "m5_bb_up" in ind:
+                    print(f"    BB 상단:        {ind['m5_bb_up']:,.0f}원")
+                if "m5_bb_dn" in ind:
+                    print(f"    BB 하단:        {ind['m5_bb_dn']:,.0f}원")
                 if "m5_bb_width" in ind:
-                    print(f"    BB Width:       {ind['m5_bb_width']:.6f}")
+                    print(f"    BB Width:       {ind['m5_bb_width']*100:.4f}%")
                 
                 print("-"*60)
             

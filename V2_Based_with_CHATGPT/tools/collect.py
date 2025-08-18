@@ -7,8 +7,8 @@ CLI 사용 예시:
 python tools/collect.py `
   --market KRW-BTC `
   --minutes 1 `
-  --days 200 `
-  --out data/raw/krw_btc_1m_200d.parquet
+  --days 10 `
+  --out data/raw/krw_btc_1m_10d.parquet
 
 사용법:
 • 업비트 공개 API에서 암호화폐 OHLCV 데이터를 수집합니다

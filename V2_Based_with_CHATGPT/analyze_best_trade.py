@@ -3,9 +3,9 @@ analyze_best_trade.py - 백테스트 최고 수익 거래 상세 분석 도구
 
 CLI 사용 예시:
 python analyze_best_trade.py `
-  --trades artifacts/backtest/trades_hgb_h20_0.001.csv `
-  --data data/classic/dataset_mtf_h20_0.001.parquet `
-  --model artifacts/train/hgb_model.joblib `
+  --trades artifacts/backtest/trades_classic_10d_h2_0.001.csv `
+  --data data/classic/dataset_mtf_10d_h2_0.001.parquet `
+  --model artifacts/train/model_classic_10d_h2_0.001.joblib `
   --top 1
 
 사용법:
@@ -17,9 +17,9 @@ python analyze_best_trade.py `
 
 분석 내용:
 • 거래 정보: 진입/청산 시간, 가격, 수익률
-• 신호 시점: 진입/청산 1분 전 피처값과 예측 확률
+• 신호 시점: 진입/청산 실행 1분 전 피처값과 예측 확률
 • 보유 기간: 5분 간격 가격/확률 변화 추적
-• 거래 실행: 신호 발생 다음 봉의 시가에서 체결 (백테스트와 동일)
+• 거래 실행: 신호 발생 후 다음 봉의 시가에서 체결 (백테스트와 동일)
 """
 
 import argparse
@@ -98,29 +98,86 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         print(f"신호 발생 시점 종가: {signal_row['close']:,.0f}원")
         print(f"다음 봉 시가 (실제 진입가): {entry_open:,.0f}원")
         print(f"백테스트 진입가: {entry_price:,.0f}원 (동일하게 다음 봉 시가)")
-        print(f"MACD: {signal_row['macd']:.2f}")
-        print(f"RSI: {signal_row['rsi_14']:.1f}")
-        print(f"볼린저밴드 중심선: {signal_row['bb_ma']:,.0f}원")
-        print(f"EMA12: {signal_row['ema_12']:,.0f}원")
-        print(f"EMA26: {signal_row['ema_26']:,.0f}원")
-        print(f"1분 수익률: {signal_row['ret_1']*100:.2f}%")
-        print(f"변동성(20분): {signal_row['vol_20']:.6f}")
-        print(f"ATR: {signal_row['atr_14']:,.0f}원")
+        
+        print(f"\n--- 기술적 지표 ---")
+        print(f"  [1분봉 지표]")
+        print(f"    RSI(14):        {signal_row['rsi_14']:.2f}")
+        print(f"    MACD:           {signal_row['macd']:.2f}")
+        if 'macd_sig' in signal_row:
+            print(f"    MACD Signal:    {signal_row['macd_sig']:.2f}")
+        if 'macd_hist' in signal_row:
+            print(f"    MACD Hist:      {signal_row['macd_hist']:.2f}")
+        print(f"    ATR(14):        {signal_row['atr_14']:,.0f}원")
+        
+        # 볼린저 밴드
+        print(f"\n    [볼린저 밴드]")
+        print(f"    BB 중심선:      {signal_row['bb_ma']:,.0f}원")
+        if 'bb_up' in signal_row:
+            print(f"    BB 상단:        {signal_row['bb_up']:,.0f}원")
+        if 'bb_dn' in signal_row:
+            print(f"    BB 하단:        {signal_row['bb_dn']:,.0f}원")
+        if 'bb_width' in signal_row:
+            print(f"    BB Width:       {signal_row['bb_width']*100:.4f}%")
+        if 'dist_bb_up' in signal_row:
+            print(f"    거리(상단):     {signal_row['dist_bb_up']*100:.4f}%")
+        if 'dist_bb_dn' in signal_row:
+            print(f"    거리(하단):     {signal_row['dist_bb_dn']*100:.4f}%")
+        
+        # 이동평균
+        print(f"\n    [이동평균]")
+        print(f"    EMA(12):        {signal_row['ema_12']:,.0f}원")
+        print(f"    EMA(26):        {signal_row['ema_26']:,.0f}원")
+        if 'sma_20' in signal_row:
+            print(f"    SMA(20):        {signal_row['sma_20']:,.0f}원")
+        if 'sma_50' in signal_row:
+            print(f"    SMA(50):        {signal_row['sma_50']:,.0f}원")
+        
+        # 수익률 및 변동성
+        print(f"\n    [수익률/변동성]")
+        print(f"    수익률(1분):    {signal_row['ret_1']*100:.4f}%")
+        if 'ret_5' in signal_row:
+            print(f"    수익률(5분):    {signal_row['ret_5']*100:.4f}%")
+        if 'ret_15' in signal_row:
+            print(f"    수익률(15분):   {signal_row['ret_15']*100:.4f}%")
+        print(f"    변동성(20):     {signal_row['vol_20']*100:.4f}%")
+        if 'vol_60' in signal_row:
+            print(f"    변동성(60):     {signal_row['vol_60']*100:.4f}%")
+        
+        # 거래량
+        if 'volume' in signal_row:
+            print(f"\n    [거래량]")
+            print(f"    거래량:         {signal_row['volume']:.4f} BTC")
+            if 'vol_sma_20' in signal_row:
+                print(f"    거래량 SMA(20): {signal_row['vol_sma_20']:.4f} BTC")
         
         # 멀티 타임프레임 지표
         if 'm3_macd' in signal_row:
-            print(f"\n--- 멀티 타임프레임 지표 ---")
-            print(f"3분봉 MACD: {signal_row['m3_macd']:.2f}")
-            print(f"3분봉 RSI: {signal_row['m3_rsi_14']:.1f}")
-            if 'm5_macd' in signal_row:
-                print(f"5분봉 MACD: {signal_row['m5_macd']:.2f}")
-                print(f"5분봉 RSI: {signal_row['m5_rsi_14']:.1f}")
+            print(f"\n  [3분봉 지표]")
+            print(f"    RSI(14):        {signal_row['m3_rsi_14']:.2f}")
+            print(f"    MACD:           {signal_row['m3_macd']:.2f}")
+            if 'm3_macd_hist' in signal_row:
+                print(f"    MACD Hist:      {signal_row['m3_macd_hist']:.2f}")
+            if 'm3_atr_14' in signal_row:
+                print(f"    ATR(14):        {signal_row['m3_atr_14']:,.0f}원")
+            if 'm3_bb_width' in signal_row:
+                print(f"    BB Width:       {signal_row['m3_bb_width']*100:.4f}%")
+                
+        if 'm5_macd' in signal_row:
+            print(f"\n  [5분봉 지표]")
+            print(f"    RSI(14):        {signal_row['m5_rsi_14']:.2f}")
+            print(f"    MACD:           {signal_row['m5_macd']:.2f}")
+            if 'm5_macd_hist' in signal_row:
+                print(f"    MACD Hist:      {signal_row['m5_macd_hist']:.2f}")
+            if 'm5_atr_14' in signal_row:
+                print(f"    ATR(14):        {signal_row['m5_atr_14']:,.0f}원")
+            if 'm5_bb_width' in signal_row:
+                print(f"    BB Width:       {signal_row['m5_bb_width']*100:.4f}%")
         
         # 모델 예측 (신호 시점 기준)
         X_signal = df[feature_cols].iloc[signal_idx:signal_idx+1]
         proba_signal = model.predict_proba(X_signal)
         
-        print(f"\n=== 신호 시점 모델 예측 ===")
+        print(f"\n=== 진입 신호 시점 모델 예측 ===")
         print(f"P_SHORT: {proba_signal[0][0]:.6f} ({proba_signal[0][0]*100:.2f}%)")
         print(f"P_FLAT:  {proba_signal[0][1]:.6f} ({proba_signal[0][1]*100:.2f}%)")
         print(f"P_LONG:  {proba_signal[0][2]:.6f} ({proba_signal[0][2]*100:.2f}%)")
@@ -164,8 +221,8 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
                 print(f"{timestamp.strftime('%H:%M')} | {price:,.0f}원 ({profit_pct:+.2f}%) | {signal_name}={p_signal:.6f}")
         
         # 청산 신호 시점 분석
-        # backtest.py에서 pos_shift 때문에 실제 신호는 청산 시점에 발생
-        exit_signal_time = exit_time
+        # 청산 신호는 청산 1분 전에 발생 (진입과 동일한 로직)
+        exit_signal_time = exit_time - pd.Timedelta(minutes=1)
         exit_signal_idx = df[df['timestamp'] == exit_signal_time].index
         if len(exit_signal_idx) == 0:
             time_diff = abs(df['timestamp'] - exit_signal_time)
@@ -174,7 +231,7 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         
         exit_signal_row = df.iloc[exit_signal_idx]
         
-        # 청산 시점 봉의 시가 구하기 (다음 봉)
+        # 청산 실행 시점 봉의 시가 구하기 (다음 봉)
         exit_idx = df[df['timestamp'] == exit_time].index
         if len(exit_idx) == 0:
             time_diff = abs(df['timestamp'] - exit_time)
@@ -182,12 +239,74 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         exit_open = df.iloc[exit_idx[0]]['open']
         
         print(f"\n=== 청산 신호 시점 ({exit_signal_time}) 분석 ===")
-        print(f"(청산 신호와 실행이 동시에 발생 - pos_shift 효과)")
+        print(f"(실제 청산은 {exit_time}에 실행)")
         print(f"신호 발생 시점 종가: {exit_signal_row['close']:,.0f}원")
         print(f"다음 봉 시가 (실제 청산가): {exit_open:,.0f}원")
         print(f"백테스트 청산가: {exit_price:,.0f}원 (동일하게 다음 봉 시가)")
-        print(f"MACD: {exit_signal_row['macd']:.2f}")
-        print(f"RSI: {exit_signal_row['rsi_14']:.1f}")
+        
+        print(f"\n--- 기술적 지표 ---")
+        print(f"  [1분봉 지표]")
+        print(f"    RSI(14):        {exit_signal_row['rsi_14']:.2f}")
+        print(f"    MACD:           {exit_signal_row['macd']:.2f}")
+        if 'macd_sig' in exit_signal_row:
+            print(f"    MACD Signal:    {exit_signal_row['macd_sig']:.2f}")
+        if 'macd_hist' in exit_signal_row:
+            print(f"    MACD Hist:      {exit_signal_row['macd_hist']:.2f}")
+        print(f"    ATR(14):        {exit_signal_row['atr_14']:,.0f}원")
+        
+        # 볼린저 밴드
+        if 'bb_ma' in exit_signal_row:
+            print(f"\n    [볼린저 밴드]")
+            print(f"    BB 중심선:      {exit_signal_row['bb_ma']:,.0f}원")
+            if 'bb_up' in exit_signal_row:
+                print(f"    BB 상단:        {exit_signal_row['bb_up']:,.0f}원")
+            if 'bb_dn' in exit_signal_row:
+                print(f"    BB 하단:        {exit_signal_row['bb_dn']:,.0f}원")
+            if 'bb_width' in exit_signal_row:
+                print(f"    BB Width:       {exit_signal_row['bb_width']*100:.4f}%")
+            if 'dist_bb_up' in exit_signal_row:
+                print(f"    거리(상단):     {exit_signal_row['dist_bb_up']*100:.4f}%")
+            if 'dist_bb_dn' in exit_signal_row:
+                print(f"    거리(하단):     {exit_signal_row['dist_bb_dn']*100:.4f}%")
+        
+        # 이동평균
+        print(f"\n    [이동평균]")
+        print(f"    EMA(12):        {exit_signal_row['ema_12']:,.0f}원")
+        print(f"    EMA(26):        {exit_signal_row['ema_26']:,.0f}원")
+        
+        # 수익률 및 변동성
+        print(f"\n    [수익률/변동성]")
+        print(f"    수익률(1분):    {exit_signal_row['ret_1']*100:.4f}%")
+        if 'ret_5' in exit_signal_row:
+            print(f"    수익률(5분):    {exit_signal_row['ret_5']*100:.4f}%")
+        if 'ret_15' in exit_signal_row:
+            print(f"    수익률(15분):   {exit_signal_row['ret_15']*100:.4f}%")
+        print(f"    변동성(20):     {exit_signal_row['vol_20']*100:.4f}%")
+        if 'vol_60' in exit_signal_row:
+            print(f"    변동성(60):     {exit_signal_row['vol_60']*100:.4f}%")
+        
+        # 멀티 타임프레임 지표
+        if 'm3_macd' in exit_signal_row:
+            print(f"\n  [3분봉 지표]")
+            print(f"    RSI(14):        {exit_signal_row['m3_rsi_14']:.2f}")
+            print(f"    MACD:           {exit_signal_row['m3_macd']:.2f}")
+            if 'm3_macd_hist' in exit_signal_row:
+                print(f"    MACD Hist:      {exit_signal_row['m3_macd_hist']:.2f}")
+            if 'm3_atr_14' in exit_signal_row:
+                print(f"    ATR(14):        {exit_signal_row['m3_atr_14']:,.0f}원")
+            if 'm3_bb_width' in exit_signal_row:
+                print(f"    BB Width:       {exit_signal_row['m3_bb_width']*100:.4f}%")
+                
+        if 'm5_macd' in exit_signal_row:
+            print(f"\n  [5분봉 지표]")
+            print(f"    RSI(14):        {exit_signal_row['m5_rsi_14']:.2f}")
+            print(f"    MACD:           {exit_signal_row['m5_macd']:.2f}")
+            if 'm5_macd_hist' in exit_signal_row:
+                print(f"    MACD Hist:      {exit_signal_row['m5_macd_hist']:.2f}")
+            if 'm5_atr_14' in exit_signal_row:
+                print(f"    ATR(14):        {exit_signal_row['m5_atr_14']:,.0f}원")
+            if 'm5_bb_width' in exit_signal_row:
+                print(f"    BB Width:       {exit_signal_row['m5_bb_width']*100:.4f}%")
         
         # 청산 신호 시점 예측
         X_exit_signal = df[feature_cols].iloc[exit_signal_idx:exit_signal_idx+1]
@@ -208,12 +327,19 @@ def analyze_top_trades(trades_file, data_file, model_file, top_n=1):
         print(f"청산 이유: {trade['exit_reason']}")
         print(f"실제 결과: {hold_minutes:.0f}분 만에 {net_ret*100:+.2f}% 수익!")
         
-        # CSV의 exit_reason에 있는 p_long 값과 비교
-        if 'p_long=' in trade['exit_reason']:
-            csv_p_long = trade['exit_reason'].split('p_long=')[1].split(' ')[0]
-            print(f"\n[검증] CSV의 청산 시점 P_LONG: {csv_p_long}")
-            print(f"[검증] 분석 도구의 청산 시점 P_LONG: {proba_exit_signal[0][2]:.6f}")
-            print(f"[검증] 일치 여부: {'일치' if abs(float(csv_p_long) - proba_exit_signal[0][2]) < 0.001 else '불일치'}")
+        # CSV의 exit_reason에 있는 확률값과 비교
+        if side == "LONG" and 'p_long=' in trade['exit_reason']:
+            csv_p_value = trade['exit_reason'].split('p_long=')[1].split(' ')[0]
+            model_p_value = proba_exit_signal[0][2]
+            print(f"\n[검증] CSV의 청산 신호 P_LONG: {csv_p_value}")
+            print(f"[검증] 분석 도구의 청산 신호 P_LONG: {model_p_value:.6f}")
+            print(f"[검증] 일치 여부: {'일치' if abs(float(csv_p_value) - model_p_value) < 0.001 else '불일치'}")
+        elif side == "SHORT" and 'p_short=' in trade['exit_reason']:
+            csv_p_value = trade['exit_reason'].split('p_short=')[1].split(' ')[0]
+            model_p_value = proba_exit_signal[0][0]
+            print(f"\n[검증] CSV의 청산 신호 P_SHORT: {csv_p_value}")
+            print(f"[검증] 분석 도구의 청산 신호 P_SHORT: {model_p_value:.6f}")
+            print(f"[검증] 일치 여부: {'일치' if abs(float(csv_p_value) - model_p_value) < 0.001 else '불일치'}")
 
 def main():
     parser = argparse.ArgumentParser(description="백테스트 최고 수익 거래 분석")

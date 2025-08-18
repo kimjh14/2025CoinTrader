@@ -5,6 +5,14 @@ artifacts/backtest 폴더의 모든 JSON 파일을 분석하여 최고/최저 �
 import json
 import glob
 import os
+import re
+
+# ========== 분석할 날짜 필터 설정 (사용자 수정 가능) ==========
+# None = 모든 날짜 분석
+# [10, 181] = 10일과 181일만 분석
+# [10] = 10일만 분석
+DAYS_TO_ANALYZE = [10]  # 예: [10, 181] 또는 None (모두)
+# ========================================================
 
 # 모든 백테스트 JSON 파일 읽기
 import pathlib
@@ -20,20 +28,53 @@ for file in json_files:
             filename = os.path.basename(file)
             cum_return = data.get('cumulative_return', 0)
             
-            # 파일명 파싱 (bt_classic_200d_h3_0.002.json 형식)
-            parts = filename.replace('bt_classic_', '').replace('.json', '').split('_')
-            if len(parts) >= 3:
-                days = parts[0].replace('d', '')
-                horizon = parts[1].replace('h', '')
-                threshold = parts[2]
+            # 파일명 파싱 개선 (bt_classic_200d_h3_0.002.json 또는 bt_seq_181d_h3_n20_0.002.json 형식)
+            if 'bt_seq_' in filename:
+                # SEQ 모드 파싱
+                match = re.search(r'bt_seq_(\d+)d_h(\d+)_n(\d+)_([\d.]+)\.json', filename)
+                if match:
+                    days = match.group(1)
+                    horizon = match.group(2)
+                    n_steps = match.group(3)
+                    threshold = match.group(4)
+                    mode = 'seq'
+                else:
+                    days, horizon, threshold, n_steps, mode = 'unknown', 'unknown', 'unknown', 'unknown', 'unknown'
             else:
-                days, horizon, threshold = 'unknown', 'unknown', 'unknown'
+                # CLASSIC 모드 파싱
+                match = re.search(r'bt_classic_(\d+)d_h(\d+)_([\d.]+)\.json', filename)
+                if match:
+                    days = match.group(1)
+                    horizon = match.group(2)
+                    threshold = match.group(3)
+                    n_steps = 'N/A'
+                    mode = 'classic'
+                else:
+                    parts = filename.replace('bt_classic_', '').replace('.json', '').split('_')
+                    if len(parts) >= 3:
+                        days = parts[0].replace('d', '')
+                        horizon = parts[1].replace('h', '')
+                        threshold = parts[2]
+                        n_steps = 'N/A'
+                        mode = 'classic'
+                    else:
+                        days, horizon, threshold, n_steps, mode = 'unknown', 'unknown', 'unknown', 'N/A', 'unknown'
+            
+            # 날짜 필터 적용
+            if DAYS_TO_ANALYZE is not None:
+                try:
+                    if int(days) not in DAYS_TO_ANALYZE:
+                        continue  # 이 파일은 건너뛰기
+                except ValueError:
+                    continue  # days가 숫자가 아니면 건너뛰기
             
             results.append({
                 'file': filename,
                 'days': days,
                 'horizon': horizon,
                 'threshold': threshold,
+                'n_steps': n_steps,
+                'mode': mode,
                 'return': cum_return,
                 'trades': data.get('total_trades', 0),
                 'win_rate': data.get('win_rate', 0),
@@ -72,6 +113,10 @@ if results:
     print('\n' + '=' * 70)
     print('통계 요약')
     print('=' * 70)
+    if DAYS_TO_ANALYZE:
+        print(f'분석 대상: {DAYS_TO_ANALYZE}일 데이터만')
+    else:
+        print(f'분석 대상: 모든 날짜')
     print(f'양수 수익률: {len(positive_results)}개 ({len(positive_results)/len(results)*100:.1f}%)')
     print(f'음수 수익률: {len(negative_results)}개 ({len(negative_results)/len(results)*100:.1f}%)')
     print(f'평균 수익률: {sum(r["return"] for r in results)/len(results)*100:.2f}%')

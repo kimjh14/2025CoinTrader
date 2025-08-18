@@ -12,7 +12,7 @@ python tools/batch_data.py --mode classic
 # 특정 입력 파일 지정 (선택사항)
 python tools/batch_data.py `
   --mode seq `
-  --input data/raw/krw_btc_1m_181d.parquet
+  --input data/raw/krw_btc_1m_30d.parquet
 
 # CSV 파일도 함께 생성 (모든 조합에 대해)
 python tools/batch_data.py --mode seq --save_csv
@@ -50,11 +50,11 @@ ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 # ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
 
 # 처리할 일수 목록 (None = data/raw에서 모든 파일, 리스트 = 선택된 일수만)
-DAYS_TO_PROCESS = [60]  # 예: [181, 200] 또는 None (모두)
+DAYS_TO_PROCESS = [10]  # 예: [181, 200] 또는 None (모두)
 
 # 공통 파라미터
 HORIZON_CANDIDATES = [1, 2, 3, 5, 7, 10]  # 예측 시점 (분)
-THRESHOLD_CANDIDATES = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005]  # 라벨링 임계값
+THRESHOLD_CANDIDATES = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.001, 0.002]  # 라벨링 임계값
 
 # SEQ 모드 전용 파라미터
 N_STEPS_CANDIDATES = [5, 10, 15, 20, 30, 60]  # 입력 패턴 길이
@@ -203,15 +203,17 @@ def run_seq_batch(input_file, output_dir, save_csv=False):
                     threshold_str = f"{threshold:.3f}".rstrip("0").rstrip(".")
                 output_file = f"{output_dir}/dataset_seq_{days}d_h{horizon}_n{n_steps}_{threshold_str}.parquet"
                 
-                print(f"[{current_combination}/{total_combinations}] 처리 중...", end=" ")
+                # 파라미터 정보를 간단히 표시
+                param_info = f"n{n_steps}_h{horizon}_t{threshold_str}"
+                print(f"[{current_combination:3d}/{total_combinations}] {param_info} 처리 중...", end=" ")
                 
                 # 데이터셋 생성
                 success, message = run_build_dataset_seq(input_file, n_steps, horizon, threshold, output_file, save_csv)
                 
                 if success:
-                    print(f"    [OK]")
+                    print(f"[OK]")
                 else:
-                    print(f"    [FAIL]")
+                    print(f"[FAIL]")
 
 def run_classic_batch(input_file, output_dir, save_csv=False):
     """CLASSIC 모드 배치 실행"""
@@ -239,16 +241,18 @@ def run_classic_batch(input_file, output_dir, save_csv=False):
                 # classic 모드는 mtf 사용
                 output_file = f"{output_dir}/dataset_mtf_{days}d_h{horizon}_{threshold_str}.parquet"
                 
-                tf_display = f"TF={timeframes if timeframes else '1m':6s}"
-                print(f"[{current_combination}/{total_combinations}] 처리 중...", end=" ")
+                # 파라미터 정보를 간단히 표시
+                tf_info = f"tf{timeframes}" if timeframes else "tf1m"
+                param_info = f"h{horizon}_{tf_info}_t{threshold_str}"
+                print(f"[{current_combination:3d}/{total_combinations}] {param_info} 처리 중...", end=" ")
                 
                 # 데이터셋 생성
                 success, message = run_build_dataset_classic(input_file, horizon, timeframes, threshold, output_file, save_csv)
                 
                 if success:
-                    print(f"    [OK]")
+                    print(f"[OK]")
                 else:
-                    print(f"    [FAIL]")
+                    print(f"[FAIL]")
 
 
 def main():
