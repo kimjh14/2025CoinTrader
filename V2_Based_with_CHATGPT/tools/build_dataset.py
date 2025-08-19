@@ -6,9 +6,9 @@ CLI 사용 예시:
 # Classic 방식 (멀티 타임프레임 + 기술적 지표)
 python tools/build_dataset.py `
   --mode classic `
-  --in data/raw/krw_btc_1m_180d.parquet `
-  --out data/classic/dataset_mtf_180d_h20_0.001.parquet `
-  --horizon 20 `
+  --in data/raw/krw_btc_1m_2d.parquet `
+  --out data/classic/dataset_mtf_2d_h2_0.001.parquet `
+  --horizon 2 `
   --up 0.001 `
   --dn -0.001 `
   --tfs 3,5

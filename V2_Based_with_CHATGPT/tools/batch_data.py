@@ -50,7 +50,7 @@ ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 # ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
 
 # 처리할 일수 목록 (None = data/raw에서 모든 파일, 리스트 = 선택된 일수만)
-DAYS_TO_PROCESS = [10]  # 예: [181, 200] 또는 None (모두)
+DAYS_TO_PROCESS = [3]  # 예: [181, 200] 또는 None (모두)
 
 # 공통 파라미터
 HORIZON_CANDIDATES = [1, 2, 3, 5, 7, 10]  # 예측 시점 (분)

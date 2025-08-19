@@ -3,10 +3,10 @@ analyze_best_trade.py - 백테스트 최고 수익 거래 상세 분석 도구
 
 CLI 사용 예시:
 python analyze_best_trade.py `
-  --trades artifacts/backtest/trades_classic_10d_h2_0.001.csv `
-  --data data/classic/dataset_mtf_10d_h2_0.001.parquet `
+  --trades artifacts/backtest/trades_classic_2d_h2_0.001.csv `
+  --data data/classic/dataset_mtf_2d_h2_0.001.parquet `
   --model artifacts/train/model_classic_10d_h2_0.001.joblib `
-  --top 1
+  --top 4
 
 사용법:
 • 백테스트 CSV에서 최고 수익 거래를 찾아 상세 분석합니다
