@@ -1,6 +1,6 @@
 """
 tools/backtest.py (final)
-- Calibrated classifier + meta 임계치 사용
+- 4개 임계값 사용 (진입/청산 분리, 히스테리시스 효과)
 - 스케일러(Optional, None-safe)
 - 거래 재구성(언제/왜 진입·청산했는지) + CSV/콘솔 출력
 - 자동 Markdown 리포트 생성(--auto_md --md_out 옵션)
@@ -22,7 +22,11 @@ python tools/backtest.py `
 • train.py로 훈련된 모델의 백테스팅을 수행합니다
 • --data: 테스트용 데이터셋 (훈련과 동일한 데이터셋 사용)
 • --model: 훈련된 모델 파일 (.joblib)
-• --meta: 모델 메타데이터 (.json) - 임계값과 피처명 포함
+• --meta: 모델 메타데이터 (.json) - 4개 임계값 포함:
+  - optimized_long_p_enter: 롱 진입 임계값
+  - optimized_long_p_exit: 롱 청산 임계값
+  - optimized_short_p_enter: 숏 진입 임계값
+  - optimized_short_p_exit: 숏 청산 임계값
 • --scaler: 스케일러 파일 (V2에서는 사용 안함, 호환용)
 • --fee: 거래 수수료 (0.0005 = 편도 0.05%)
 • --report: 백테스트 결과 요약 (.json)
@@ -82,20 +86,65 @@ def class_indices(clf) -> Dict[str, Optional[int]]:
     }
 
 
-def positions_from_proba(proba: np.ndarray, meta: dict, idx: dict):
+def positions_from_proba(proba: np.ndarray, meta: dict, idx: dict, prev_pos: int = 0):
+    """진입/청산 임계값을 분리하여 히스테리시스 효과 적용"""
     allow_short = bool(meta.get("allow_short", False))
-    long_p = float(meta.get("optimized_long_p", 0.6))
-    short_p = float(meta.get("optimized_short_p", 0.6))
+    
+    # 진입 임계값 (명시적 키 우선)
+    long_p_enter = float(meta.get("optimized_long_p_enter", meta.get("optimized_long_p", 0.6)))
+    short_p_enter = float(meta.get("optimized_short_p_enter", meta.get("optimized_short_p", 0.6)))
+    
+    # 청산 임계값 (진입보다 낮게 설정, 기본값: 진입 임계값의 80%)
+    long_p_exit = float(meta.get("optimized_long_p_exit", long_p_enter * 0.8))
+    short_p_exit = float(meta.get("optimized_short_p_exit", short_p_enter * 0.8))
+    
     p_long = proba[:, idx["long"]] if idx["long"] is not None else np.zeros(len(proba))
     p_short = proba[:, idx["short"]] if (allow_short and idx["short"] is not None) else None
-
-    if allow_short and p_short is not None:
-        pos = np.where(p_long >= long_p, 1, np.where(p_short >= short_p, -1, 0))
-    else:
-        pos = (p_long >= long_p).astype(int)
+    
+    pos = np.zeros(len(proba), dtype=int)
+    
+    for i in range(len(proba)):
+        current_p_long = p_long[i]
+        current_p_short = p_short[i] if p_short is not None else 0
+        
+        if i == 0:
+            # 첫 봉은 prev_pos 사용
+            current_pos = prev_pos
+        else:
+            current_pos = pos[i-1]
+        
+        # 현재 포지션에 따른 청산/진입 로직
+        if current_pos == 1:  # 롱 포지션 중
+            if current_p_long < long_p_exit:  # 롱 청산
+                if allow_short and current_p_short >= short_p_enter:  # 숏 진입
+                    pos[i] = -1
+                else:  # 플랫
+                    pos[i] = 0
+            else:  # 롱 유지
+                pos[i] = 1
+                
+        elif current_pos == -1:  # 숏 포지션 중
+            if current_p_short < short_p_exit:  # 숏 청산
+                if current_p_long >= long_p_enter:  # 롱 진입
+                    pos[i] = 1
+                else:  # 플랫
+                    pos[i] = 0
+            else:  # 숏 유지
+                pos[i] = -1
+                
+        else:  # 플랫 상태
+            if current_p_long >= long_p_enter:  # 롱 진입
+                pos[i] = 1
+            elif allow_short and current_p_short >= short_p_enter:  # 숏 진입
+                pos[i] = -1
+            else:  # 플랫 유지
+                pos[i] = 0
+    
     return pos.astype(int), p_long, (p_short if p_short is not None else None), {
-        "long_p": long_p,
-        "short_p": short_p,
+        "long_p_enter": long_p_enter,
+        "short_p_enter": short_p_enter,
+        "long_p_exit": long_p_exit,
+        "short_p_exit": short_p_exit,
         "allow_short": allow_short,
     }
 
@@ -142,8 +191,10 @@ def reconstruct_trades(
     fee: float,
 ) -> List[dict]:
     allow_short = th["allow_short"]
-    long_p = th["long_p"]
-    short_p = th["short_p"]
+    long_p_enter = th.get("long_p_enter", th.get("long_p", 0.6))
+    short_p_enter = th.get("short_p_enter", th.get("short_p", 0.6))
+    long_p_exit = th.get("long_p_exit", long_p_enter * 0.8)
+    short_p_exit = th.get("short_p_exit", short_p_enter * 0.8)
     trades = []
     cur_dir = 0  # -1/0/1
 
@@ -160,8 +211,8 @@ def reconstruct_trades(
             entry_price = open_prices[i] if i < len(open_prices) else close[i]
             
             reason = f"enter {side_from(new_dir)}: " + (
-                f"p_long={p_long[actual_idx]:.3f} >= {long_p:.3f}" if new_dir == 1
-                else f"p_short={(p_short[actual_idx] if p_short is not None else 0):.3f} >= {short_p:.3f}"
+                f"p_long={p_long[actual_idx]:.3f} >= {long_p_enter:.3f}" if new_dir == 1
+                else f"p_short={(p_short[actual_idx] if p_short is not None else 0):.3f} >= {short_p_enter:.3f}"
             )
             trades.append({
                 "side": side_from(new_dir),
@@ -194,11 +245,11 @@ def reconstruct_trades(
                 # 간단한 청산 이유 - 신호 시점 다음 봉에서 무조건 실행
                 actual_idx = i - 1 if i > 0 else i
                 if cur_dir == 1:
-                    reason = f"exit LONG: p_long={p_long[actual_idx]:.3f} < {long_p:.3f}"
+                    reason = f"exit LONG: p_long={p_long[actual_idx]:.3f} < {long_p_exit:.3f}"
                     gross = (last["exit_price"] / last["entry_price"]) - 1.0
                 else:
                     sprob = (p_short[actual_idx] if p_short is not None else 0.0)
-                    reason = f"exit SHORT: p_short={sprob:.3f} < {short_p:.3f}"
+                    reason = f"exit SHORT: p_short={sprob:.3f} < {short_p_exit:.3f}"
                     gross = (last["entry_price"] / last["exit_price"]) - 1.0
                     
                 if new_dir != 0:
@@ -216,8 +267,8 @@ def reconstruct_trades(
                 entry_price = open_prices[i] if i < len(open_prices) else close[i]
                 
                 reason = f"flipped: " + (
-                    f"p_long={p_long[actual_idx]:.3f} >= {long_p:.3f}" if new_dir == 1
-                    else f"p_short={(p_short[actual_idx] if p_short is not None else 0):.3f} >= {short_p:.3f}"
+                    f"p_long={p_long[actual_idx]:.3f} >= {long_p_enter:.3f}" if new_dir == 1
+                    else f"p_short={(p_short[actual_idx] if p_short is not None else 0):.3f} >= {short_p_enter:.3f}"
                 )
                 trades.append({
                     "side": side_from(new_dir),
@@ -293,9 +344,9 @@ def run_backtest(args):
         else:
             raise
     
-    # positions
+    # positions (히스테리시스 적용)
     idx = class_indices(model if not hasattr(model, "estimator") else model.estimator)
-    pos, p_long, p_short, th = positions_from_proba(proba, meta, idx)
+    pos, p_long, p_short, th = positions_from_proba(proba, meta, idx, prev_pos=0)
     
     # equity curve (시가 기준)
     equity, _, ret, pos_shift = equity_curve(close, open_prices, pos, args.fee)
@@ -417,13 +468,18 @@ def generate_markdown_report(trades, summary_info, output_path):
             end_str = pd.to_datetime(summary_info['end_time']).strftime('%Y-%m-%d %H:%M KST')
             f.write(f"- 기간: {start_str} ~ {end_str}\n")
         th = summary_info['thresholds']
-        f.write(f"- 임계치: long_p={th['long_p']:.3f}, short_p={th['short_p']:.3f}, allow_short={th['allow_short']}\n\n")
+        f.write(f"- 임계치: long_enter={th['long_p_enter']:.3f}, long_exit={th['long_p_exit']:.3f}, ")
+        if th['allow_short']:
+            f.write(f"short_enter={th['short_p_enter']:.3f}, short_exit={th['short_p_exit']:.3f}, ")
+        f.write(f"allow_short={th['allow_short']}\n\n")
         
         # 모델/임계치 정보
         f.write("## 모델/임계치 정보\n")
-        f.write(f"- 최적 롱 확률 임계치: {th['long_p']:.3f}\n")
+        f.write(f"- 롱 진입 임계치: {th['long_p_enter']:.3f}\n")
+        f.write(f"- 롱 청산 임계치: {th['long_p_exit']:.3f}\n")
         if th['allow_short']:
-            f.write(f"- 최적 숏 확률 임계치: {th['short_p']:.3f}\n")
+            f.write(f"- 숏 진입 임계치: {th['short_p_enter']:.3f}\n")
+            f.write(f"- 숏 청산 임계치: {th['short_p_exit']:.3f}\n")
         f.write(f"- 수수료(한쪽): {summary_info['fee']}\n")
         f.write("- 알고리즘: HistGradientBoostingClassifier + IsotonicCalibration (FrozenEstimator)\n\n")
         
@@ -452,3 +508,89 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# === EXIT-MVP BACKTEST BLOCK START ===
+# [EXIT-MVP] positions_with_exit_model
+import numpy as np, joblib
+from tools.position_state import PositionState
+from tools.features_exit import build_exit_features_onebar, features_to_row, EXIT_FEATURES_DEFAULT
+
+def positions_with_exit_model(proba, meta, idx, df, open_prices):
+    allow_short = bool(meta.get("allow_short", False))
+    long_enter = float(meta.get("optimized_long_p_enter", meta.get("optimized_long_p", 0.6)))
+    short_enter = float(meta.get("optimized_short_p_enter", meta.get("optimized_short_p", 0.6)))
+
+    exit_meta = meta.get("exit", {})
+    feat_order = exit_meta.get("features", EXIT_FEATURES_DEFAULT)
+    th_long_exit = float(exit_meta.get("thresholds", {}).get("long", 0.5))
+    th_short_exit = float(exit_meta.get("thresholds", {}).get("short", 0.5))
+    model_long_path = exit_meta.get("models", {}).get("long")
+    model_short_path = exit_meta.get("models", {}).get("short")
+
+    exit_long_model = joblib.load(model_long_path) if model_long_path else None
+    exit_short_model = joblib.load(model_short_path) if (allow_short and model_short_path) else None
+
+    p_long = proba[:, idx["long"]] if idx["long"] is not None else np.zeros(len(proba))
+    p_short = proba[:, idx["short"]] if (allow_short and idx["short"] is not None) else np.zeros(len(proba))
+
+    pos = np.zeros(len(proba), dtype=int)
+    state = None
+
+    for i in range(len(proba)):
+        prev_pos = pos[i-1] if i>0 else 0
+
+        # Exit check first
+        if prev_pos == 1 and exit_long_model is not None:
+            if state is None:
+                state = PositionState(entry_idx=i-1, entry_price=float(df["close"].iloc[i-1]), side=1)
+            feat = build_exit_features_onebar(df, i, state)
+            x = features_to_row(feat, feat_order)
+            p_close = float(exit_long_model.predict_proba(x)[0, 1])
+            if p_close >= th_long_exit:
+                pos[i] = 0
+                state = None
+                continue
+            pos[i] = 1
+            continue
+
+        if prev_pos == -1 and exit_short_model is not None:
+            if state is None:
+                state = PositionState(entry_idx=i-1, entry_price=float(df["close"].iloc[i-1]), side=-1)
+            feat = build_exit_features_onebar(df, i, state)
+            x = features_to_row(feat, feat_order)
+            p_close = float(exit_short_model.predict_proba(x)[0, 1])
+            if p_close >= th_short_exit:
+                pos[i] = 0
+                state = None
+                continue
+            pos[i] = -1
+            continue
+
+        # Entry if flat
+        if prev_pos == 0:
+            if p_long[i] >= long_enter:
+                pos[i] = 1
+                state = PositionState(entry_idx=i, entry_price=float(open_prices[i]), side=1)
+            elif allow_short and p_short[i] >= short_enter:
+                pos[i] = -1
+                state = PositionState(entry_idx=i, entry_price=float(open_prices[i]), side=-1)
+            else:
+                pos[i] = 0
+            continue
+
+        pos[i] = prev_pos
+
+    return pos.astype(int), p_long, (p_short if allow_short else None)
+
+# === EXIT-MVP BACKTEST BLOCK END ===
+
+
+# === EXIT-MVP USAGE HINT START ===
+# [EXIT-MVP] To activate exit model path in your main backtest flow:
+# use_exit = bool(meta.get("exit", {}).get("use_exit_model", False))
+# if use_exit:
+#     pos, p_long, p_short = positions_with_exit_model(proba, meta, idx, df, open_prices)
+# else:
+#     pos, p_long, p_short, th = positions_from_proba(proba, meta, idx, prev_pos=0)
+
+# === EXIT-MVP USAGE HINT END ===

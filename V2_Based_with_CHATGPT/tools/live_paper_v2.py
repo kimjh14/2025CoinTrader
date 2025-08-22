@@ -5,8 +5,9 @@ live_paper_v2.py - 개선된 실시간 페이퍼 트레이딩 시스템
 1. 실행 시점 기준 최신 완성된 봉부터 450개 수집 (420 워밍업 + 30 여유분)
 2. 420분 워밍업으로 지표 안정화 (build_dataset.py 방식)
 3. 최신 봉의 p_long, p_short, p_flat 계산
-4. 실시간 가상 거래 시뮬레이션 (포지션 관리, 수익률 계산)
-5. 거래 로그 CSV 저장 및 상태 관리
+4. 히스테리시스 적용: 4개 임계값(진입/청산 분리)으로 빈번한 거래 방지
+5. 실시간 가상 거래 시뮬레이션 (포지션 관리, 수익률 계산)
+6. 거래 로그 CSV 저장 및 상태 관리
 
 CLI 사용 예시:
 python tools/live_paper_v2.py `
@@ -213,9 +214,14 @@ def build_features_with_warmup(df: pd.DataFrame, tfs: List[int] = None) -> Tuple
     return df_after_warmup, warmup_used
 
 def predict_latest(df_features: pd.DataFrame, model_path: str, meta_path: str, 
-                  scaler_path: Optional[str] = None) -> Dict:
+                  scaler_path: Optional[str] = None, current_position: int = 0) -> Dict:
     """
-    최신 봉에 대한 예측 수행
+    최신 봉에 대한 예측 수행 (히스테리시스 적용)
+    
+    Parameters:
+    -----------
+    current_position : int
+        현재 포지션 (-1: 숏, 0: 플랫, 1: 롱)
     
     Returns:
     --------
@@ -230,8 +236,12 @@ def predict_latest(df_features: pd.DataFrame, model_path: str, meta_path: str,
     
     features = meta.get("features", [])
     allow_short = meta.get("allow_short", False)
-    long_p = meta.get("optimized_long_p", 0.6)
-    short_p = meta.get("optimized_short_p", 0.6)
+    
+    # 히스테리시스 임계값 로드 (진입/청산 분리)
+    long_p_enter = meta.get("optimized_long_p_enter", meta.get("optimized_long_p", 0.6))
+    long_p_exit = meta.get("optimized_long_p_exit", long_p_enter * 0.8)
+    short_p_enter = meta.get("optimized_short_p_enter", meta.get("optimized_short_p", 0.6))
+    short_p_exit = meta.get("optimized_short_p_exit", short_p_enter * 0.8)
     
     # 최신 행 추출
     if df_features.empty:
@@ -280,17 +290,30 @@ def predict_latest(df_features: pd.DataFrame, model_path: str, meta_path: str,
     p_flat = proba[idx_flat] if idx_flat is not None else 0.0
     p_long = proba[idx_long] if idx_long is not None else 0.0
     
-    # 예측 결정
-    if allow_short:
-        if p_long >= long_p:
+    # 히스테리시스를 적용한 예측 결정
+    if current_position == 1:  # 롱 포지션 중
+        if p_long < long_p_exit:  # 롱 청산
+            if allow_short and p_short >= short_p_enter:  # 숏 진입
+                decision = "SHORT"
+            else:
+                decision = "FLAT"
+        else:  # 롱 유지
             decision = "LONG"
-        elif p_short >= short_p:
+            
+    elif current_position == -1:  # 숏 포지션 중
+        if p_short < short_p_exit:  # 숏 청산
+            if p_long >= long_p_enter:  # 롱 진입
+                decision = "LONG"
+            else:
+                decision = "FLAT"
+        else:  # 숏 유지
             decision = "SHORT"
-        else:
-            decision = "FLAT"
-    else:
-        if p_long >= long_p:
+            
+    else:  # 플랫 상태
+        if p_long >= long_p_enter:  # 롱 진입
             decision = "LONG"
+        elif allow_short and p_short >= short_p_enter:  # 숏 진입
+            decision = "SHORT"
         else:
             decision = "FLAT"
     
@@ -321,8 +344,11 @@ def predict_latest(df_features: pd.DataFrame, model_path: str, meta_path: str,
         "p_long": float(p_long),
         "p_short": float(p_short),
         "p_flat": float(p_flat),
-        "threshold_long": float(long_p),
-        "threshold_short": float(short_p),
+        "threshold_long_enter": float(long_p_enter),
+        "threshold_long_exit": float(long_p_exit),
+        "threshold_short_enter": float(short_p_enter),
+        "threshold_short_exit": float(short_p_exit),
+        "current_position": current_position,
         "allow_short": allow_short,
         "decision": decision,
         "features_used": len(features),
@@ -422,9 +448,13 @@ def main():
                 time.sleep(60)
                 continue
             
-            # 3. 최신 봉 예측
+            # 현재 상태 로드
+            state = load_state(args.state)
+            current_position = state.get("position", 0)
+            
+            # 3. 최신 봉 예측 (현재 포지션 고려)
             try:
-                prediction = predict_latest(df_features, args.model, args.meta, args.scaler)
+                prediction = predict_latest(df_features, args.model, args.meta, args.scaler, current_position)
             except Exception as e:
                 print(f"[오류] 예측 실패: {e}")
                 if args.once:
@@ -547,10 +577,21 @@ def main():
                 print("-"*60)
             
             print(f"예측 확률:")
-            print(f"  - P(LONG):  {prediction['p_long']:.6f} (임계치: {prediction['threshold_long']:.3f})")
-            print(f"  - P(FLAT):  {prediction['p_flat']:.6f}")
-            print(f"  - P(SHORT): {prediction['p_short']:.6f} (임계치: {prediction['threshold_short']:.3f})")
+            # 현재 포지션에 따른 임계값 표시
+            if current_position == 1:  # 롱 포지션
+                print(f"  - P(LONG):  {prediction['p_long']:.6f} (청산 임계치: {prediction['threshold_long_exit']:.3f})")
+                print(f"  - P(FLAT):  {prediction['p_flat']:.6f}")
+                print(f"  - P(SHORT): {prediction['p_short']:.6f} (진입 임계치: {prediction['threshold_short_enter']:.3f})")
+            elif current_position == -1:  # 숏 포지션
+                print(f"  - P(LONG):  {prediction['p_long']:.6f} (진입 임계치: {prediction['threshold_long_enter']:.3f})")
+                print(f"  - P(FLAT):  {prediction['p_flat']:.6f}")
+                print(f"  - P(SHORT): {prediction['p_short']:.6f} (청산 임계치: {prediction['threshold_short_exit']:.3f})")
+            else:  # 플랫
+                print(f"  - P(LONG):  {prediction['p_long']:.6f} (진입 임계치: {prediction['threshold_long_enter']:.3f})")
+                print(f"  - P(FLAT):  {prediction['p_flat']:.6f}")
+                print(f"  - P(SHORT): {prediction['p_short']:.6f} (진입 임계치: {prediction['threshold_short_enter']:.3f})")
             print("-"*60)
+            print(f"현재 포지션: {['플랫', '롱', '숏'][current_position + 1] if -1 <= current_position <= 1 else '알수없음'}")
             print(f"결정: {prediction['decision']}")
             print(f"숏 허용: {prediction['allow_short']}")
             print(f"사용 피처: {prediction['features_used']}개")
@@ -558,7 +599,7 @@ def main():
             print("="*60)
             
             # 5. 거래 시뮬레이션 및 상태 관리
-            state = load_state(args.state)
+            # state는 이미 로드됨
             state["last_prediction"] = prediction
             state["last_update"] = datetime.now().isoformat()
             
@@ -700,3 +741,39 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# === EXIT-MVP LIVE BLOCK START ===
+# [EXIT-MVP] Live exit evaluation snippet (illustrative, non-breaking)
+# After loading meta and computing current_position, you can do:
+# from tools.position_state import PositionState
+# from tools.features_exit import build_exit_features_onebar, features_to_row, EXIT_FEATURES_DEFAULT
+# import joblib, numpy as np
+#
+# exit_meta = meta.get("exit", {})
+# if exit_meta.get("use_exit_model", False) and current_position != 0:
+#     feat_order = exit_meta.get("features", EXIT_FEATURES_DEFAULT)
+#     th_long_exit = float(exit_meta.get("thresholds", {}).get("long", 0.5))
+#     th_short_exit = float(exit_meta.get("thresholds", {}).get("short", 0.5))
+#     model_long_path = exit_meta.get("models", {}).get("long")
+#     model_short_path = exit_meta.get("models", {}).get("short")
+#     exit_long_model = joblib.load(model_long_path) if model_long_path else None
+#     exit_short_model = joblib.load(model_short_path) if model_short_path else None
+#
+#     # NOTE: For accurate features you should keep a persisted PositionState.
+#     # Here we approximate with last bar info.
+#     if current_position == 1 and exit_long_model is not None:
+#         st = PositionState(entry_idx=len(df_features)-2, entry_price=float(df_features["close"].iloc[-2]), side=1)
+#         feat = build_exit_features_onebar(df_features, len(df_features)-1, st)
+#         x = features_to_row(feat, feat_order)
+#         p_close = float(exit_long_model.predict_proba(x)[0,1])
+#         if p_close >= th_long_exit:
+#             decision = "FLAT"
+#     elif current_position == -1 and exit_short_model is not None:
+#         st = PositionState(entry_idx=len(df_features)-2, entry_price=float(df_features["close"].iloc[-2]), side=-1)
+#         feat = build_exit_features_onebar(df_features, len(df_features)-1, st)
+#         x = features_to_row(feat, feat_order)
+#         p_close = float(exit_short_model.predict_proba(x)[0,1])
+#         if p_close >= th_short_exit:
+#             decision = "FLAT"
+
+# === EXIT-MVP LIVE BLOCK END ===

@@ -50,11 +50,11 @@ ROOT_DIR = SCRIPT_DIR.parent  # V2_Based_with_CHATGPT 폴더
 # ========== 배치 파라미터 설정 (사용자 수정 가능) ==========
 
 # 처리할 일수 목록 (None = data/raw에서 모든 파일, 리스트 = 선택된 일수만)
-DAYS_TO_PROCESS = [3]  # 예: [181, 200] 또는 None (모두)
+DAYS_TO_PROCESS = [200]  # 예: [181, 200] 또는 None (모두)
 
 # 공통 파라미터
 HORIZON_CANDIDATES = [1, 2, 3, 5, 7, 10]  # 예측 시점 (분)
-THRESHOLD_CANDIDATES = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.001, 0.002]  # 라벨링 임계값
+THRESHOLD_CANDIDATES = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.001]  # 라벨링 임계값
 
 # SEQ 모드 전용 파라미터
 N_STEPS_CANDIDATES = [5, 10, 15, 20, 30, 60]  # 입력 패턴 길이

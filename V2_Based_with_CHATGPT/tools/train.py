@@ -28,7 +28,11 @@ python tools/train.py `
 • HistGradientBoostingClassifier: 안정적이고 강력한 알고리즘
 • 확률 보정: CalibratedClassifierCV로 정확한 확률 예측
 • 시계열 CV: TimeSeriesSplit으로 적합한 교차검증
-• 자동 임계치 최적화: 롱/숏 진입점 자동 탐색
+• 4개 임계값 최적화: 진입/청산 임계값 분리 (히스테리시스)
+  - long_p_enter: 롱 진입 임계값
+  - long_p_exit: 롱 청산 임계값 (진입보다 낮게)
+  - short_p_enter: 숏 진입 임계값
+  - short_p_exit: 숏 청산 임계값 (진입보다 낮게)
 • 균형잡힌 거래: 롱과 숏 모두 적절히 활용
 
 거래 모드:
@@ -109,6 +113,68 @@ def quick_equity_from_proba(
     )
 
 
+def quick_equity_from_proba_with_hysteresis(
+    proba, prices_df, fee=0.0005, allow_short=False, 
+    long_p_enter=0.6, long_p_exit=0.48,
+    short_p_enter=0.6, short_p_exit=0.48, 
+    class_index=None
+):
+    """히스테리시스를 적용한 에쿼티 계산 (진입/청산 임계값 분리)"""
+    if class_index is None:
+        class_index = {-1: 0, 0: 1, 1: 2}
+    
+    # 포지션 계산 (히스테리시스 적용)
+    positions = np.zeros(len(proba))
+    current_pos = 0
+    
+    for i in range(len(proba)):
+        p_long = proba[i, class_index[1]] if 1 in class_index else 0
+        p_short = proba[i, class_index[-1]] if -1 in class_index else 0
+        
+        # 현재 포지션에 따른 청산/진입 로직
+        if current_pos == 1:  # 롱 포지션 중
+            if p_long < long_p_exit:  # 롱 청산
+                if allow_short and p_short >= short_p_enter:  # 숏 진입
+                    positions[i] = -1
+                    current_pos = -1
+                else:  # 플랫
+                    positions[i] = 0
+                    current_pos = 0
+            else:  # 롱 유지
+                positions[i] = 1
+                
+        elif current_pos == -1:  # 숏 포지션 중
+            if p_short < short_p_exit:  # 숏 청산
+                if p_long >= long_p_enter:  # 롱 진입
+                    positions[i] = 1
+                    current_pos = 1
+                else:  # 플랫
+                    positions[i] = 0
+                    current_pos = 0
+            else:  # 숏 유지
+                positions[i] = -1
+                
+        else:  # 플랫 상태
+            if p_long >= long_p_enter:  # 롱 진입
+                positions[i] = 1
+                current_pos = 1
+            elif allow_short and p_short >= short_p_enter:  # 숏 진입
+                positions[i] = -1
+                current_pos = -1
+            else:  # 플랫 유지
+                positions[i] = 0
+    
+    # PnL 계산
+    equity, _, _ = calculate_next_open_pnl(
+        prices=prices_df,
+        positions=positions.astype(int),
+        fee=fee,
+        initial_capital=1.0
+    )
+    
+    return equity[-1]  # 최종 자산 반환
+
+
 def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short=False, fee=0.0005):
     df, X, y, feats, ts, fwd = load_dataset(data_path)
     if X.size == 0:
@@ -176,8 +242,8 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
             best_eq_split = -1
             best_lp, best_sp = 0.60, 0.60  # 기본값 0.60
             
-            for lp in longs:
-                if allow_short:
+            if allow_short:
+                for lp in longs:
                     for sp in shorts:
                         eq = quick_equity_from_proba(
                             proba=proba,
@@ -190,14 +256,15 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
                         )
                         if eq > best_eq_split:
                             best_eq_split, best_lp, best_sp = eq, lp, sp
-                else:
+            else:
+                for lp in longs:
                     eq = quick_equity_from_proba(
                         proba=proba,
                         prices_df=va_prices,
                         fee=fee,
                         allow_short=False,
                         long_p=lp,
-                        short_p=sp,  # allow_short=False일 때는 사용 안됨
+                        short_p=0.60,  # allow_short=False일 때는 기본값 사용
                         class_index=class_index
                     )
                     if eq > best_eq_split:
@@ -233,38 +300,81 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
     proba_ho = cal.predict_proba(X_ho)
     ho_prices = df.iloc[split_idx:][["open", "close"]].reset_index(drop=True)
     
-    # 적응적 임계치 탐색 범위 (최소 0.5, 최대 0.8)
-    longs = np.linspace(0.50, 0.80, 7)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80
-    shorts = np.linspace(0.50, 0.80, 7)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80
-    best_eq, best_lp, best_sp = -1, 0.60, 0.60  # 기본값 0.60
+    # 클래스 인덱스 안전화
+    classes = list(getattr(cal, "classes_", [-1, 0, 1]))
+    class_index_safe = {
+        -1: classes.index(-1) if -1 in classes else None,
+        0: classes.index(0) if 0 in classes else None,
+        1: classes.index(1) if 1 in classes else None
+    }
+    
+    # 4개 임계값 최적화: 진입/청산 분리 (히스테리시스)
+    print("\n=== 4개 임계값 최적화 시작 ===")
+    
+    # 진입 임계값 범위
+    long_enters = np.linspace(0.50, 0.80, 7)  # 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80
+    short_enters = np.linspace(0.50, 0.80, 7)
+    
+    # 청산 임계값 비율 (진입 대비)
+    exit_ratios = [0.6, 0.7, 0.8, 0.9]  # 진입의 60%, 70%, 80%, 90%
+    
+    best_eq = -1
+    best_lp_enter, best_lp_exit = 0.60, 0.48
+    best_sp_enter, best_sp_exit = 0.60, 0.48
 
     if allow_short:
-        for lp in longs:
-            for sp in shorts:
-                eq = quick_equity_from_proba(
+        # 롱/숏 모두 최적화
+        for lp_enter in long_enters:
+            for sp_enter in short_enters:
+                for exit_ratio in exit_ratios:
+                    lp_exit = lp_enter * exit_ratio
+                    sp_exit = sp_enter * exit_ratio
+                    
+                    eq = quick_equity_from_proba_with_hysteresis(
+                        proba=proba_ho,
+                        prices_df=ho_prices,
+                        fee=fee,
+                        allow_short=True,
+                        long_p_enter=lp_enter,
+                        long_p_exit=lp_exit,
+                        short_p_enter=sp_enter,
+                        short_p_exit=sp_exit,
+                        class_index=class_index_safe
+                    )
+                    
+                    if eq > best_eq:
+                        best_eq = eq
+                        best_lp_enter, best_lp_exit = lp_enter, lp_exit
+                        best_sp_enter, best_sp_exit = sp_enter, sp_exit
+    else:
+        # 롱만 최적화
+        for lp_enter in long_enters:
+            for exit_ratio in exit_ratios:
+                lp_exit = lp_enter * exit_ratio
+                
+                eq = quick_equity_from_proba_with_hysteresis(
                     proba=proba_ho,
                     prices_df=ho_prices,
                     fee=fee,
-                    allow_short=True,
-                    long_p=lp,
-                    short_p=sp,
-                    class_index=class_index
+                    allow_short=False,
+                    long_p_enter=lp_enter,
+                    long_p_exit=lp_exit,
+                    short_p_enter=0.99,  # 사용 안함
+                    short_p_exit=0.99,   # 사용 안함
+                    class_index=class_index_safe
                 )
+                
                 if eq > best_eq:
-                    best_eq, best_lp, best_sp = eq, lp, sp
-    else:
-        for lp in longs:
-            eq = quick_equity_from_proba(
-                proba=proba_ho,
-                prices_df=ho_prices,
-                fee=fee,
-                allow_short=False,
-                long_p=lp,
-                short_p=sp,  # allow_short=False일 때는 사용 안됨
-                class_index=class_index
-            )
-            if eq > best_eq:
-                best_eq, best_lp = eq, lp
+                    best_eq = eq
+                    best_lp_enter, best_lp_exit = lp_enter, lp_exit
+                    # 숏은 기본값 유지
+                    best_sp_enter, best_sp_exit = 0.60, 0.48
+    
+    print(f"\n최적 임계값 발견:")
+    print(f"  롱: 진입={best_lp_enter:.3f}, 청산={best_lp_exit:.3f}")
+    if allow_short:
+        print(f"  숏: 진입={best_sp_enter:.3f}, 청산={best_sp_exit:.3f}")
+    print(f"  최종 자산: {best_eq:.4f}x")
     
     # 경계값에서 최적값 발견 시 범위 확장 재탐색 (최대 0.8로 제한)
     # 롱 임계치 확장 - 이미 0.8이 최대이므로 확장 불필요
@@ -314,14 +424,14 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
             if eq > best_eq:
                 best_eq, best_sp = eq, sp
 
-    # 간단 리포트 - 기본 임계값(0.5)
+        # 간단 리포트 - 기본 임계값(0.5)
     y_pred_ho = cal.predict(X_ho)
     print("\n=== Classification report (기본 임계값 0.5) ===")
     print(classification_report(y_ho, y_pred_ho, digits=4))
     print("Confusion matrix:\n", confusion_matrix(y_ho, y_pred_ho))
     
     # 최적 임계값으로 다시 예측
-    print(f"\n=== Classification report (최적 임계값: long_p={best_lp:.3f}, short_p={best_sp:.3f}) ===")
+    print(f"\n=== Classification report (최적 임계값: long_p={best_lp_enter:.3f}, short_p={best_sp_enter:.3f}) ===")
     
     # 최적 임계값으로 예측 생성
     if allow_short:
@@ -347,9 +457,10 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
     print(f"FLAT (대기): {n_flat} ({n_flat/total_samples*100:.1f}%)")
     print(f"총 거래 비율: {(n_long_trades+n_short_trades)/total_samples*100:.1f}%")
     
-    print(f"\nBest holdout equity={best_eq:.4f} with thresholds: long_p={best_lp:.3f}"
-        + (f", short_p={best_sp:.3f}" if allow_short else "")
-    )
+    print(f"\nBest holdout equity={best_eq:.4f}")
+    print(f"  롱: 진입={best_lp_enter:.3f}, 청산={best_lp_exit:.3f}")
+    if allow_short:
+        print(f"  숏: 진입={best_sp_enter:.3f}, 청산={best_sp_exit:.3f}")
 
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     joblib.dump(cal, model_path)  # 보정된 모델 저장
@@ -360,15 +471,19 @@ def train(data_path, model_path, scaler_path, meta_path, n_splits=4, allow_short
         "n_train": int(len(X_tr)),
         "n_holdout": int(len(X_ho)),
         "allow_short": bool(allow_short),
-        "optimized_long_p": float(best_lp),
-        "optimized_short_p": float(best_sp if allow_short else 0.60),
+        "optimized_long_p": float(best_lp_enter),  # 기존 호환성
+        "optimized_short_p": float(best_sp_enter if allow_short else 0.60),  # 기존 호환성
+        "optimized_long_p_enter": float(best_lp_enter),  # 명시적 진입
+        "optimized_long_p_exit": float(best_lp_exit),    # 명시적 청산
+        "optimized_short_p_enter": float(best_sp_enter if allow_short else 0.60),  # 명시적 진입
+        "optimized_short_p_exit": float(best_sp_exit if allow_short else 0.60),    # 명시적 청산
         "fee_used": float(fee),
         "algo": "HistGradientBoostingClassifier + IsotonicCalibration",
         "params": best_model,
         "execution_rule": "next_open",
-        "optimization_method": "equity_based_threshold_search",
+        "optimization_method": "equity_based_threshold_search_with_hysteresis",
         "sklearn_version": "1.6+" if FrozenEstimator else "<1.6",
-        "notes": "체결: 다음 봉 시가, 임계치 탐색: 홀드아웃 에쿼티 최대화"
+        "notes": "체결: 다음 봉 시가, 히스테리시스 적용 (진입/청산 임계값 분리)"
     }
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -391,3 +506,98 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# === EXIT-MVP TRAIN BLOCK START ===
+# [EXIT-MVP] Minimal Exit model training block
+# Note: 이 블록은 현재 비활성화됨 (히스테리시스 방식 사용 중)
+# This block expects variables in scope: best_model, X_ho, df, split_idx, fee, meta, model_path
+"""
+EXIT-MVP 블록 비활성화 - 히스테리시스 방식이 충분히 잘 작동하므로 필요 없음
+if False:  # EXIT-MVP 비활성화
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.calibration import CalibratedClassifierCV
+        import numpy as np, joblib
+        from pathlib import Path
+        from tools.labels_exit import build_entries_from_proba, label_optimal_exits
+        from tools.position_state import PositionState
+        from tools.features_exit import build_exit_features_onebar, features_to_row, EXIT_FEATURES_DEFAULT
+
+    # Fallbacks
+    allow_short = bool(meta.get("allow_short", False))
+    long_enter = float(meta.get("optimized_long_p_enter", meta.get("optimized_long_p", 0.6)))
+    short_enter = float(meta.get("optimized_short_p_enter", meta.get("optimized_short_p", 0.6)))
+    exit_horizon = int(meta.get("exit", {}).get("horizon", 60))
+    exit_delta = float(meta.get("exit", {}).get("delta_margin", 0.0005))
+
+    print("[EXIT-MVP] Preparing exit training from holdout...")
+    proba_ho = best_model.predict_proba(X_ho)
+    classes = list(getattr(best_model, "classes_", [-1,0,1]))
+    entries = build_entries_from_proba(proba_ho, classes, long_enter, short_enter, allow_short, cooldown=exit_horizon)
+
+    if entries:
+        close_ho = df.iloc[split_idx:]["close"].values
+        y_exit_df = label_optimal_exits(close_ho, entries, horizon=exit_horizon, fee=fee, delta=exit_delta)
+        if not y_exit_df.empty:
+            df_ho = df.iloc[split_idx:].reset_index(drop=True)
+            feat_cols = EXIT_FEATURES_DEFAULT[:]
+            X_exit_long, y_exit_long, X_exit_short, y_exit_short = [], [], [], []
+
+            for t0, g in y_exit_df.groupby("t0"):
+                entry_price = float(df_ho["close"].iloc[t0]) if t0 < len(df_ho) else float(df_ho["close"].iloc[-1])
+                side = int(g["side"].iloc[0])
+                st = PositionState(entry_idx=t0, entry_price=entry_price, side=side)
+                for _, row in g.sort_values("t").iterrows():
+                    i = int(row["t"])
+                    if i >= len(df_ho): break
+                    feat = build_exit_features_onebar(df_ho, i, st)
+                    x = features_to_row(feat, feat_cols)[0]
+                    if side == 1:
+                        X_exit_long.append(x); y_exit_long.append(int(row["close_label"]))
+                    else:
+                        X_exit_short.append(x); y_exit_short.append(int(row["close_label"]))
+
+            def fit_exit(X, y):
+                if len(X) < 10: return None
+                X = np.vstack(X); y = np.array(y)
+                base = LogisticRegression(max_iter=200, class_weight="balanced")
+                cal = CalibratedClassifierCV(base, method="isotonic", cv=3)
+                cal.fit(X, y)
+                return cal
+
+            exit_long_model = fit_exit(X_exit_long, y_exit_long)
+            exit_short_model = fit_exit(X_exit_short, y_exit_short) if allow_short else None
+
+            # Save
+            exit_dir = Path(model_path).parent / "exit"
+            exit_dir.mkdir(parents=True, exist_ok=True)
+
+            meta.setdefault("exit", {})
+            meta["exit"]["use_exit_model"] = True
+            meta["exit"]["horizon"] = int(exit_horizon)
+            meta["exit"]["delta_margin"] = float(exit_delta)
+            meta["exit"]["features"] = feat_cols
+            meta["exit"]["thresholds"] = meta["exit"].get("thresholds", {})
+            meta["exit"]["models"] = meta["exit"].get("models", {})
+
+            if exit_long_model is not None:
+                p_long_path = str(exit_dir / "exit_long.joblib")
+                joblib.dump(exit_long_model, p_long_path)
+                meta["exit"]["models"]["long"] = p_long_path
+                meta["exit"]["thresholds"]["long"] = float(0.5)
+
+            if allow_short and exit_short_model is not None:
+                p_short_path = str(exit_dir / "exit_short.joblib")
+                joblib.dump(exit_short_model, p_short_path)
+                meta["exit"]["models"]["short"] = p_short_path
+                meta["exit"]["thresholds"]["short"] = float(0.5)
+
+            print("[EXIT-MVP] Exit models saved and meta updated.")
+        else:
+            print("[EXIT-MVP] No exit labels on holdout; skipping exit training.")
+    else:
+        print("[EXIT-MVP] No entries on holdout; skipping exit training.")
+    except Exception as e:
+        print("[EXIT-MVP][WARN] Exit training block failed:", e)
+"""
+# === EXIT-MVP TRAIN BLOCK END ===
