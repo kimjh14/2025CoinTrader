@@ -15,11 +15,11 @@ python tools/train.py `
 
 # 롱/숏 모드 (고급, 위험 높음)
 python tools/train.py `
-  --data data/classic/dataset_mtf_200d_h10_0.03.parquet `
-  --model artifacts/train/model_classic_200d_h10_0.03.joblib `
-  --scaler artifacts/train/scaler_classic_200d_h10_0.03.joblib `
-  --meta artifacts/train/meta_classic_200d_h10_0.03.json `
-  --splits 4 `
+  --data data/classic/dataset_mtf_300d_h2_0.0005.parquet `
+  --model artifacts/train/model_classic_300d_h2_0.0005.joblib `
+  --scaler artifacts/train/scaler_classic_300d_h2_0.0005.joblib `
+  --meta artifacts/train/meta_classic_300d_h2_0.0005.json `
+  --splits 8 `
   --fee 0.0005 `
   --allow_short
 

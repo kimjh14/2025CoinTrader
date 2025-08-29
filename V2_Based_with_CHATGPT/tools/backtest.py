@@ -9,14 +9,14 @@ tools/backtest.py (final)
 CLI 사용 예시:
 python tools/backtest.py `
     --data data/classic/dataset_mtf_30d_h2_0.0005.parquet `
-    --model artifacts/train/model_classic_3d_h2_0.0005.joblib `
-    --meta artifacts/train/meta_classic_3d_h2_0.0005.json `
-    --scaler artifacts/train/scaler_classic_3d_h2_0.0005.joblib `
+    --model artifacts/train/model_classic_300d_h2_0.0005.joblib `
+    --meta artifacts/train/meta_classic_300d_h2_0.0005.json `
+    --scaler artifacts/train/scaler_classic_300d_h2_0.0005.joblib `
     --fee 0.0005 `
-    --report artifacts/backtest/bt_classic_30d_h2_0.0005.json `
-    --log_csv artifacts/backtest/trades_classic_30d_h2_0.0005.csv `
+    --report artifacts/backtest/bt_classic_3d_h2_0.0005.json `
+    --log_csv artifacts/backtest/trades_classic_3d_h2_0.0005.csv `
     --auto_md `
-    --md_out artifacts/backtest/trades_classic_30d_h2_0.0005.md
+    --md_out artifacts/backtest/trades_classic_3d_h2_0.0005.md
 
 사용법:
 • train.py로 훈련된 모델의 백테스팅을 수행합니다

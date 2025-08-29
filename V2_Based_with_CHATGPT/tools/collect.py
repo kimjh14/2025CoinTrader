@@ -7,8 +7,8 @@ CLI 사용 예시:
 python tools/collect.py `
   --market KRW-BTC `
   --minutes 1 `
-  --days 30 `
-  --out data/raw/krw_btc_1m_30d.parquet  
+  --days 1000`
+  --out data/raw/krw_btc_1m_1000d.parquet  
 
 사용법:
 • 업비트 공개 API에서 암호화폐 OHLCV 데이터를 수집합니다
@@ -79,7 +79,7 @@ def throttle_from_header(resp: requests.Response, rps_limit: Optional[float]=Non
         pass
     if sec_allow is not None:
         if sec_allow <= 0:
-            time.sleep(1.02)
+            time.sleep(0.52)
         elif sec_allow <= 2:
             # Jitter 추가로 동시성 스파이크 방지
             base_sleep = 0.12
@@ -184,7 +184,7 @@ def collect_days_fast(market="KRW-BTC", unit=1, days=1, verbose=True, rps_limit:
             retry_count += 1
             if verbose:
                 print(f"[warn] page {page} fetch failed: {e}. retry in 1s... (retry #{retry_count})")
-            time.sleep(1.0)
+            time.sleep(0.5)
             page -= 1
             continue
 
